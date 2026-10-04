@@ -14,6 +14,7 @@ Development starts with the **Open Design frontend handover**, using its design 
 - Parse and store the required email fields in a local SQLite database.
 - Organize messages by category and a separate High, Medium, or Low priority.
 - Display predictions, confidence, filters, email details, and basic statistics in a React Smart Inbox.
+- Visualize category distribution in a dashboard treemap, with rectangle sizes based on email counts and category selection opening the matching inbox messages.
 - Flag low-confidence predictions as **Needs Review**.
 - Let users label messages, correct predictions, and retain feedback for later training.
 - Train, evaluate, and run a traditional ML classifier locally.
@@ -65,10 +66,10 @@ The frontend will render message content safely as plain text. API inputs will b
 
 ## Development roadmap
 
-1. Receive and integrate the Open Design frontend with synthetic data, interaction tests, and security checks.
+1. Receive and integrate the Open Design frontend, including the dashboard treemap, with synthetic data, interaction tests, and security checks.
 2. Agree the frontend/backend API contract and establish FastAPI foundations.
 3. Implement local storage and safe IMAP ingestion.
-4. Connect the frontend and build a human-labeled dataset.
+4. Connect the frontend and dashboard aggregates to local data and build a human-labeled dataset.
 5. Train and evaluate the category baseline.
 6. Add inference, independent priority assignment, and the feedback loop.
 7. Complete local packaging, reproducible setup, and CI.
@@ -112,7 +113,8 @@ This runs the Python starter. Application startup, frontend commands, and IMAP c
 
 Application test suites and CI are not configured yet. Planned checks cover:
 
-- Frontend filtering, labeling, correction, loading/error states, accessibility, and safe content rendering.
+- Frontend filtering, labeling, correction, treemap category navigation, loading/error states, accessibility, and safe content rendering.
+- Dashboard category counts, percentages, human-label precedence, Unclassified messages, and refresh after sync or corrections.
 - Backend input validation, persistence, API integration, and local access restrictions.
 - IMAP parsing, repeatable sync, failure recovery, and unchanged mailbox state.
 - ML preprocessing, saved-model loading, valid predictions, missing fields, and missing or corrupt models.

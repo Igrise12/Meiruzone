@@ -41,7 +41,15 @@ The backend owns mailbox synchronization, parsing, persistence, ML inference, an
 
 ### React client
 
-The client provides the Smart Inbox, email list and details, category and priority filters, confidence and “Needs Review” indicators, manual labels, correction controls, and basic category statistics. It communicates with FastAPI over a local HTTP connection.
+The client provides the Smart Inbox, email list and details, category and priority filters, confidence and “Needs Review” indicators, manual labels, correction controls, and a dashboard category treemap. It communicates with FastAPI over a local HTTP connection. The treemap is an MVP requirement and is part of the frontend-first Open Design integration, initially using synthetic data.
+
+#### Dashboard treemap
+
+Each nonzero category is a rectangle whose area is proportional to its email count. Use consistent category colors, readable labels, and hover/focus details showing category, count, and percentage. Category selection filters or navigates to the corresponding Smart Inbox messages. Provide keyboard access and an equivalent category/count list so small tiles and color are not the only way to read or use the dashboard. Include loading, empty, and error states and responsive layouts.
+
+The backend computes counts across **all locally stored messages**, independent of inbox pagination and filters. Resolve each message's effective category from its human label first, then its model prediction, otherwise Unclassified. Unclassified is a display bucket distinct from the Other category. Count each message once, derive percentages from the same total, and refresh the dashboard after sync, labeling, correction, or new predictions. Priority and confidence remain separate from the treemap's category counts.
+
+The dashboard API returns aggregate category/count data and the total, rather than email bodies, senders, or subjects. Compute aggregates from existing SQLite records; no additional service or analytics store is needed. Render the chart locally without exporting email data to a chart provider.
 
 ### FastAPI application
 
@@ -53,7 +61,7 @@ Initial API capabilities should include:
 - Start or request a mailbox sync and report its outcome.
 - Add or change a category or priority label.
 - Record a correction separately from the original prediction.
-- Return model/evaluation status and simple aggregate counts where available.
+- Return model/evaluation status and dashboard category counts and totals for the treemap.
 
 Exact route names and API versioning can be decided during implementation; this document does not prescribe a particular URL scheme.
 
@@ -143,7 +151,7 @@ SMTP, cloud hosting, external LLM APIs, Redis, Celery, Kubernetes, and MLflow ar
 
 ## Quality and delivery
 
-The planned GitHub Actions workflow should run on pull requests and pushes to development branches. It should install dependencies, lint, run backend and ML checks, run frontend checks, build the application, and validate the Docker image when those components exist. ML checks should cover preprocessing, artifact loading, prediction shape/classes, and malformed or missing fields. CI fixtures must be synthetic or anonymized.
+The planned GitHub Actions workflow should run on pull requests and pushes to development branches. It should install dependencies, lint, run backend and ML checks, run frontend checks, build the application, and validate the Docker image when those components exist. ML checks should cover preprocessing, artifact loading, prediction shape/classes, and malformed or missing fields. Dashboard checks should cover aggregate totals, effective-category precedence, Unclassified messages, pagination independence, category navigation, refresh after corrections, and accessible empty/error states. CI fixtures must be synthetic or anonymized.
 
 Continuous Integration is in scope; automatic production deployment is not required. A local release may package the application, Compose configuration, and an explicitly versioned model artifact without requiring a hosted service.
 
@@ -153,4 +161,4 @@ The architecture intentionally leaves extension points for PostgreSQL, richer sc
 
 ## MVP acceptance path
 
-The end-to-end path is complete when a user can sync real mail over IMAP, review locally stored messages, label examples, train and evaluate a model, receive category/confidence and priority predictions, correct them, and use the Smart Inbox locally with reproducible setup and CI checks.
+The end-to-end path is complete when a user can sync real mail over IMAP, review locally stored messages, label examples, train and evaluate a model, receive category/confidence and priority predictions, correct them, and use the Smart Inbox and an accurate category treemap locally with reproducible setup and CI checks.

@@ -15,6 +15,7 @@ All items are pending. The Open Design handover is an input to the first milesto
 
 - [ ] Receive the Open Design frontend source/export, assets, font information, design tokens, screen references, interaction notes, and local run instructions.
 - [ ] Review the handover against the [client brief's product experience](client-brief.md#product-experience); record missing screens or behaviors before implementation.
+- [ ] Include the required dashboard category treemap in the Open Design handover review; extend the handed-over design if the chart or its states are missing.
 - [ ] Confirm asset and font usage rights and inspect dependencies and install scripts before integrating the export.
 - [ ] Integrate the handed-over frontend under `frontend/`, adapting it to React where necessary and preserving the supplied visual foundation.
 - [ ] Document the frontend runtime version, package manager, installation, development, test, and production build commands.
@@ -26,7 +27,10 @@ All items are pending. The Open Design handover is an input to the first milesto
 - [ ] Add category and priority filters and a clearly defined Needs Review view for low-confidence predictions.
 - [ ] Show category, confidence, priority, sender, subject, date, read state, and attachment presence where appropriate.
 - [ ] Provide manual category and priority labeling and correction controls; distinguish human labels from model predictions.
-- [ ] Add basic category distribution statistics; use the handover's visualization or a simple chart before considering an optional treemap.
+- [ ] Build the required dashboard category treemap with synthetic counts; size rectangles by email count and use consistent category colors with category/count/percentage details.
+- [ ] Make category selection navigate to or filter the Smart Inbox, with keyboard access and an equivalent category/count list for small tiles and accessible reading.
+- [ ] Display counts for all locally stored messages, independently of inbox filters or pagination; include an Unclassified bucket distinct from Other and handle zero-count categories and an empty dataset clearly.
+- [ ] Provide responsive treemap layouts and loading/error states using the Open Design visual foundation.
 - [ ] Provide sync status and a sync action, with mocked responses until the backend is ready.
 - [ ] Cover loading, empty inbox, no filter matches, connection/sync failure, save failure, and missing-model states.
 - [ ] Support responsive layouts, keyboard navigation, visible focus, accessible form labels, and readable status/error messages.
@@ -37,15 +41,18 @@ All items are pending. The Open Design handover is an input to the first milesto
 - [ ] Configure linting, type checks where applicable, component tests, and a production build check.
 - [ ] Test filtering, detail selection, confidence display, label/correction submission, save failures, and empty/error states using synthetic fixtures.
 - [ ] Test keyboard access to the main workflow and check the agreed layouts against the Open Design references.
+- [ ] Test treemap counts and percentages, category selection, keyboard navigation, skewed category sizes, and loading/empty/error states using synthetic fixtures.
 - [ ] Render message content as escaped plain text; verify malicious HTML/script fixtures do not execute or load remote tracking content.
 - [ ] Keep IMAP credentials and tokens out of frontend code, build-time variables, browser storage, and client logs.
 - [ ] Review handed-over dependencies and remote assets; remove unnecessary tracking or services that send email data outside the machine.
+- [ ] Render the treemap locally using aggregate data only; keep message content and personal metadata out of chart payloads, tooltips, and external analytics.
 
-**Milestone complete when:** the handed-over design runs locally as a usable React Smart Inbox with synthetic data, the core interactions work, and frontend checks pass.
+**Milestone complete when:** the handed-over design runs locally as a usable React Smart Inbox with a dashboard treemap and synthetic data, category navigation works, and frontend checks pass.
 
 ## 2. Agree the API contract and establish backend foundations
 
 - [ ] Define frontend/backend request and response shapes for email listing/details, category and priority filters, pagination, labels/corrections, sync status, and category statistics.
+- [ ] Define the treemap aggregate response with category counts and total messages, covering the full local dataset; use human category labels before predictions and place messages with neither in Unclassified.
 - [ ] Specify stable email IDs, date formatting, category/priority values, confidence representation, missing predictions, and validation errors in the contract.
 - [ ] Scaffold FastAPI according to the [architecture's code organization](architecture.md#suggested-code-organization), keeping routes, services, persistence, IMAP, and ML responsibilities clear.
 - [ ] Add local configuration with documented safe defaults and a secret-free `.env.example`.
@@ -79,14 +86,16 @@ All items are pending. The Open Design handover is an input to the first milesto
 ## 4. Connect the frontend and build the labeled dataset
 
 - [ ] Replace synthetic data calls with the agreed API adapter and retain fixtures for development and automated tests.
-- [ ] Connect email lists/details, filters, pagination, sync status, and basic statistics to SQLite-backed endpoints.
+- [ ] Connect email lists/details, filters, pagination, sync status, and dashboard treemap aggregates to SQLite-backed endpoints.
+- [ ] Compute treemap counts from existing records without adding an analytics service; count each message once and refresh after sync, labels/corrections, and new predictions.
 - [ ] Persist manual category and priority labels and prediction corrections through validated API operations.
 - [ ] Show successful saves and recoverable failures accurately; preserve user changes while retrying a failed save.
 - [ ] Make labeled messages available to local training, with a clear distinction between human labels and unverified predictions.
 - [ ] Test frontend/backend integration for filtering, labeling, correcting, refresh/restart persistence, and API failures.
+- [ ] Test treemap totals and percentages against stored messages, including human-label precedence, Unclassified messages, unchanged totals across inbox pages/filters, and refreshed category counts after correction.
 - [ ] Recheck safe rendering using ingested message content and verify secret fields never appear in API responses.
 
-**Milestone complete when:** a user can review locally ingested messages and create reliable training labels from the Smart Inbox.
+**Milestone complete when:** a user can review locally ingested messages, inspect accurate dashboard category counts, and create reliable training labels from the Smart Inbox.
 
 ## 5. Train and evaluate the category baseline
 
@@ -135,6 +144,7 @@ Start frontend CI during milestone 1, then extend it as backend and ML capabilit
 
 - [ ] Walk through the [client brief's definition of success](client-brief.md#definition-of-success) using an explicitly configured test account or approved local mailbox.
 - [ ] Verify the full path: sync → local storage → labeling → training/evaluation → prediction → Smart Inbox → correction → later retraining.
+- [ ] Verify the dashboard treemap matches local category totals, refreshes when categories change, and opens the expected messages from a selected category.
 - [ ] Confirm operation without cloud infrastructure and without external AI calls; allow only expected network access such as IMAP and the local API during normal use.
 - [ ] Confirm read-only mailbox behavior, protected secrets, sanitized logs, safe message rendering, and restricted local API access.
 - [ ] Confirm automated fixtures, screenshots, CI outputs, container images, and release files contain no private emails or credentials.
@@ -148,7 +158,7 @@ Start frontend CI during milestone 1, then extend it as backend and ML capabilit
 Revisit these only after MVP acceptance and a demonstrated need:
 
 - [ ] Optional periodic sync with APScheduler and a single scheduler owner.
-- [ ] Optional category treemap or additional visualizations.
+- [ ] Additional dashboard visualizations beyond the required category treemap, if a demonstrated need remains.
 - [ ] Alternative classifiers and embeddings, measured against the baseline.
 - [ ] Local LLM summaries, action items, or low-confidence fallback with explicit privacy controls.
 - [ ] PostgreSQL, separate workers, optional cloud integrations, or release automation.

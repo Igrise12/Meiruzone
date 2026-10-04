@@ -30,7 +30,11 @@ The first user is an individual who wants a personal inbox organization tool and
 
 ## Product experience
 
-The Smart Inbox presents a searchable or filterable list of locally synced messages with category, priority, and confidence indicators. Users can open a message, inspect its relevant content, and accept or correct its prediction. Low-confidence messages appear in a “Needs Review” state. Basic statistics can show how messages are distributed across categories.
+The Smart Inbox presents a searchable or filterable list of locally synced messages with category, priority, and confidence indicators. Users can open a message, inspect its relevant content, and accept or correct its prediction. Low-confidence messages appear in a “Needs Review” state.
+
+The MVP dashboard includes a **category treemap** to make the inbox distribution easy to understand. Each rectangle represents a category, and its area reflects the number of locally stored messages in that category. Labels and hover/focus details show the category, count, and share of the total. Selecting a category opens or filters its messages in the Smart Inbox.
+
+Dashboard totals cover all locally stored messages, independently of inbox pagination or filters. Human corrections take precedence over predictions; messages with neither appear as Unclassified. The treemap refreshes after sync or category changes and includes an accessible category/count list and clear loading, empty, and error states. It is a required part of the first frontend milestone, built initially with synthetic data using the Open Design handover as its visual foundation.
 
 The first category set is:
 
@@ -62,7 +66,7 @@ The first classifier is TF-IDF with Logistic Regression. The user can correct it
 
 ## Proposed technology
 
-- **Frontend:** React for the Smart Inbox, filters, review, correction, and basic statistics.
+- **Frontend:** React for the Smart Inbox, filters, review, correction, and a dashboard category treemap.
 - **Backend:** Python and FastAPI for the local API, sync coordination, persistence, and inference.
 - **Email access:** IMAP for retrieving messages; SMTP is out of scope.
 - **Storage:** SQLite initially, with an option to consider PostgreSQL only if future needs warrant it.
@@ -79,7 +83,7 @@ The first classifier is TF-IDF with Logistic Regression. The user can correct it
 - Baseline category training, evaluation, and local inference.
 - Basic priority assignment.
 - Confidence display, “Needs Review,” and prediction correction.
-- Smart Inbox views and basic category statistics.
+- Smart Inbox views and a dashboard category treemap with counts, percentages, and category navigation.
 - Local setup documentation and CI checks.
 
 ### Not included in the first release
@@ -95,17 +99,18 @@ The first classifier is TF-IDF with Logistic Regression. The user can correct it
 
 ## Delivery approach
 
-1. **Connect and retrieve:** prove IMAP connectivity and parse messages.
-2. **Store locally:** persist messages in SQLite and make sync repeatable.
-3. **Build labeled data:** allow manual category and priority labels.
-4. **Train a baseline:** fit and evaluate TF-IDF plus Logistic Regression.
-5. **Serve predictions:** connect inference and feedback to FastAPI.
-6. **Build the Smart Inbox:** display and filter messages, expose review and correction.
-7. **Make it reproducible:** document local setup and add CI for lint, tests, and builds.
+1. **Frontend first:** integrate the Open Design handover and build the Smart Inbox and dashboard treemap with synthetic data, interaction tests, and security checks.
+2. **Backend foundations:** agree the API contract, including dashboard aggregates, and establish FastAPI.
+3. **Connect and store:** retrieve messages safely over IMAP and persist them in SQLite.
+4. **Integrate and label:** connect the frontend and treemap to local data and allow manual category and priority labels.
+5. **Train a baseline:** fit and evaluate TF-IDF plus Logistic Regression.
+6. **Serve predictions:** integrate category inference, priority, and feedback, refreshing dashboard counts when categories change.
+7. **Make it reproducible:** complete local packaging and setup documentation, extending CI from the first frontend phase to backend and ML checks.
+8. **Validate the MVP:** check the complete workflow, dashboard accuracy, accessibility, and security.
 
 ## Definition of success
 
-The MVP succeeds when a user can retrieve real messages over IMAP, store and classify them locally, label examples, train and evaluate a model, see category/confidence and priority predictions in the Smart Inbox, correct those predictions, and repeat the setup from documented instructions. Automated CI checks should validate changes before they are merged.
+The MVP succeeds when a user can retrieve real messages over IMAP, store and classify them locally, label examples, train and evaluate a model, see category/confidence and priority predictions in the Smart Inbox, understand category distribution through an accurate dashboard treemap, correct predictions, and repeat the setup from documented instructions. Automated CI checks should validate changes before they are merged.
 
 ## Later opportunities
 
