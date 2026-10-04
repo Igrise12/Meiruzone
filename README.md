@@ -4,9 +4,9 @@ A local-first Smart Inbox that will classify email, estimate its priority, and l
 
 ## Project status
 
-Meiruzone is currently in the planning stage. The repository contains a Python starter and project documentation; the React frontend, FastAPI backend, IMAP integration, and trained models have not been implemented yet.
+The React Smart Inbox now runs locally with synthetic email data. The FastAPI backend, IMAP integration, local database, and trained models are still planned work.
 
-Development starts with the **Open Design frontend handover**, using its design and source as the foundation. The frontend will first run with synthetic email data, followed by backend integration and the ML workflow. See the [project task list](docs/TO-DO.md) for the current delivery order and completion criteria.
+Development starts with the **Open Design frontend handover**, using its design and source as the foundation. The frontend runs with synthetic email data, followed by backend integration and the ML workflow. See the [project task list](docs/TO-DO.md) for the current delivery order and completion criteria.
 
 ## Planned MVP
 
@@ -87,6 +87,10 @@ Meiruzone/
 │   ├── architecture.md   # Proposed system design and data flows
 │   ├── client-brief.md   # Product goals, scope, and success criteria
 │   └── TO-DO.md          # Frontend-first implementation checklist
+├── frontend/             # Vite + React + TypeScript Smart Inbox preview
+│   ├── src/              # Inbox UI, synthetic fixtures, adapter, and treemap
+│   ├── tests/            # Component and aggregate tests
+│   └── README.md         # Frontend setup and verification commands
 ├── playground/           # Placeholder for experiments and notebooks
 ├── .env.example          # Starter environment template
 ├── hello.py              # Python starter entry point
@@ -94,7 +98,7 @@ Meiruzone/
 └── uv.lock               # Locked Python dependencies
 ```
 
-The `frontend/` directory, local data storage, and model artifact directories will be added during implementation.
+Local data storage and model artifact directories will be added during later implementation.
 
 ## Set up the current starter
 
@@ -107,7 +111,18 @@ uv sync
 uv run hello.py
 ```
 
-This runs the Python starter. Application startup, frontend commands, and IMAP configuration instructions will be documented as those components are implemented. Do not put real credentials into tracked files.
+This runs the Python starter. Frontend setup and verification commands are documented in [frontend/README.md](frontend/README.md). Do not put real credentials into tracked files.
+
+## Run the frontend preview
+
+Requirements: Node.js 20.19+ or 22.12+ and npm 10+. From `frontend/`:
+
+```bash
+npm install
+npm run dev
+```
+
+Vite prints the local preview URL. Check the frontend with `npm test`, `npm run lint`, `npm run typecheck`, and `npm run build`. The demo does not connect to a mailbox; confirmed labels stay in browser local storage.
 
 ## Testing and quality
 

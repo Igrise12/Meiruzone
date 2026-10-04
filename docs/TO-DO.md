@@ -7,45 +7,45 @@
 
 This checklist changes the delivery order to **frontend first**, using the frontend handed over from **Open Design** as the design and implementation base. Build and review the frontend with synthetic data before connecting the backend. The product scope and local-first requirements in the referenced documents still apply.
 
-All items are pending. The Open Design handover is an input to the first milestone; its contents have not yet been reviewed. Mark a task complete only when its deliverable and relevant checks are complete.
+Task 1 is complete. Later milestones remain pending. Mark a task complete only when its deliverable and relevant checks are complete.
 
 ## 1. Frontend first: receive and integrate the Open Design handover
 
 ### Handover and setup
 
-- [ ] Receive the Open Design frontend source/export, assets, font information, design tokens, screen references, interaction notes, and local run instructions.
-- [ ] Review the handover against the [client brief's product experience](client-brief.md#product-experience); record missing screens or behaviors before implementation.
-- [ ] Include the required dashboard category treemap in the Open Design handover review; extend the handed-over design if the chart or its states are missing.
-- [ ] Confirm asset and font usage rights and inspect dependencies and install scripts before integrating the export.
-- [ ] Integrate the handed-over frontend under `frontend/`, adapting it to React where necessary and preserving the supplied visual foundation.
-- [ ] Document the frontend runtime version, package manager, installation, development, test, and production build commands.
-- [ ] Create synthetic email fixtures covering all eight categories, all three priorities, low confidence, unlabeled messages, and absent predictions.
+- [x] Receive the Open Design frontend source/export, assets, font information, design tokens, screen references, interaction notes, and local run instructions.
+- [x] Review the handover against the [client brief's product experience](client-brief.md#product-experience); record missing screens or behaviors before implementation.
+- [x] Include the required dashboard category treemap in the Open Design handover review; extend the handed-over design if the chart or its states are missing.
+- [x] Confirm asset and font usage rights and inspect dependencies and install scripts before integrating the export.
+- [x] Integrate the handed-over frontend under `frontend/`, adapting it to React where necessary and preserving the supplied visual foundation.
+- [x] Document the frontend runtime version, package manager, installation, development, test, and production build commands.
+- [x] Create synthetic email fixtures covering all eight categories, all three priorities, low confidence, unlabeled messages, and absent predictions.
 
 ### Smart Inbox behavior
 
-- [ ] Implement the email list and details using the handover as the base.
-- [ ] Add category and priority filters and a clearly defined Needs Review view for low-confidence predictions.
-- [ ] Show category, confidence, priority, sender, subject, date, read state, and attachment presence where appropriate.
-- [ ] Provide manual category and priority labeling and correction controls; distinguish human labels from model predictions.
-- [ ] Build the required dashboard category treemap with synthetic counts; size rectangles by email count and use consistent category colors with category/count/percentage details.
-- [ ] Make category selection navigate to or filter the Smart Inbox, with keyboard access and an equivalent category/count list for small tiles and accessible reading.
-- [ ] Display counts for all locally stored messages, independently of inbox filters or pagination; include an Unclassified bucket distinct from Other and handle zero-count categories and an empty dataset clearly.
-- [ ] Provide responsive treemap layouts and loading/error states using the Open Design visual foundation.
-- [ ] Provide sync status and a sync action, with mocked responses until the backend is ready.
-- [ ] Cover loading, empty inbox, no filter matches, connection/sync failure, save failure, and missing-model states.
-- [ ] Support responsive layouts, keyboard navigation, visible focus, accessible form labels, and readable status/error messages.
-- [ ] Keep UI data access behind a small API adapter so fixtures can be replaced with FastAPI responses.
+- [x] Implement the email list and details using the handover as the base.
+- [x] Add category and priority filters and a clearly defined Needs Review view for low-confidence predictions.
+- [x] Show category, confidence, priority, sender, subject, date, read state, and attachment presence where appropriate.
+- [x] Provide manual category and priority labeling and correction controls; distinguish human labels from model predictions.
+- [x] Build the required dashboard category treemap with synthetic counts; size rectangles by email count and use consistent category colors with category/count/percentage details.
+- [x] Make category selection navigate to or filter the Smart Inbox, with keyboard access and an equivalent category/count list for small tiles and accessible reading.
+- [x] Display counts for all locally stored messages, independently of inbox filters or pagination; include an Unclassified bucket distinct from Other and handle zero-count categories and an empty dataset clearly.
+- [x] Provide responsive treemap layouts and loading/error states using the Open Design visual foundation.
+- [x] Provide sync status and a sync action, with mocked responses until the backend is ready.
+- [x] Cover loading, empty inbox, no filter matches, connection/sync failure, save failure, and missing-model states.
+- [x] Support responsive layouts, keyboard navigation, visible focus, accessible form labels, and readable status/error messages.
+- [x] Keep UI data access behind a small API adapter so fixtures can be replaced with FastAPI responses.
 
 ### Frontend testing and security
 
-- [ ] Configure linting, type checks where applicable, component tests, and a production build check.
-- [ ] Test filtering, detail selection, confidence display, label/correction submission, save failures, and empty/error states using synthetic fixtures.
-- [ ] Test keyboard access to the main workflow and check the agreed layouts against the Open Design references.
-- [ ] Test treemap counts and percentages, category selection, keyboard navigation, skewed category sizes, and loading/empty/error states using synthetic fixtures.
-- [ ] Render message content as escaped plain text; verify malicious HTML/script fixtures do not execute or load remote tracking content.
-- [ ] Keep IMAP credentials and tokens out of frontend code, build-time variables, browser storage, and client logs.
-- [ ] Review handed-over dependencies and remote assets; remove unnecessary tracking or services that send email data outside the machine.
-- [ ] Render the treemap locally using aggregate data only; keep message content and personal metadata out of chart payloads, tooltips, and external analytics.
+- [x] Configure linting, type checks where applicable, component tests, and a production build check.
+- [x] Test filtering, detail selection, confidence display, label/correction submission, save failures, and empty/error states using synthetic fixtures.
+- [x] Test keyboard access to the main workflow and check the agreed layouts against the Open Design references.
+- [x] Test treemap counts and percentages, category selection, keyboard navigation, skewed category sizes, and loading/empty/error states using synthetic fixtures.
+- [x] Render message content as escaped plain text; verify malicious HTML/script fixtures do not execute or load remote tracking content.
+- [x] Keep IMAP credentials and tokens out of frontend code, build-time variables, browser storage, and client logs.
+- [x] Review handed-over dependencies and remote assets; remove unnecessary tracking or services that send email data outside the machine.
+- [x] Render the treemap locally using aggregate data only; keep message content and personal metadata out of chart payloads, tooltips, and external analytics.
 
 **Milestone complete when:** the handed-over design runs locally as a usable React Smart Inbox with a dashboard treemap and synthetic data, category navigation works, and frontend checks pass.
 
