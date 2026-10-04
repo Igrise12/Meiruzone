@@ -7,7 +7,7 @@
 
 This checklist changes the delivery order to **frontend first**, using the frontend handed over from **Open Design** as the design and implementation base. Build and review the frontend with synthetic data before connecting the backend. The product scope and local-first requirements in the referenced documents still apply.
 
-Task 1 is complete. Later milestones remain pending. Mark a task complete only when its deliverable and relevant checks are complete.
+Tasks 1 and 2 are complete. Task 2 also brings forward the initial SQLite storage foundation from task 3; the remaining later milestones are pending. Mark a task complete only when its deliverable and relevant checks are complete.
 
 ## 1. Frontend first: receive and integrate the Open Design handover
 
@@ -51,22 +51,24 @@ Task 1 is complete. Later milestones remain pending. Mark a task complete only w
 
 ## 2. Agree the API contract and establish backend foundations
 
-- [ ] Define frontend/backend request and response shapes for email listing/details, category and priority filters, pagination, labels/corrections, sync status, and category statistics.
-- [ ] Define the treemap aggregate response with category counts and total messages, covering the full local dataset; use human category labels before predictions and place messages with neither in Unclassified.
-- [ ] Specify stable email IDs, date formatting, category/priority values, confidence representation, missing predictions, and validation errors in the contract.
-- [ ] Scaffold FastAPI according to the [architecture's code organization](architecture.md#suggested-code-organization), keeping routes, services, persistence, IMAP, and ML responsibilities clear.
-- [ ] Add local configuration with documented safe defaults and a secret-free `.env.example`.
-- [ ] Add `.gitignore` coverage for secrets, private emails/datasets, SQLite files and sidecars, local model artifacts, and generated files.
-- [ ] Define how local credentials are supplied without writing plaintext passwords into the application database or source code.
-- [ ] Bind the backend to loopback by default, allow only intended frontend origins, and choose protection against unauthorized state-changing requests from other origins.
-- [ ] Add input validation and limits for pagination, labels, message identifiers, and sync requests; return sanitized errors.
-- [ ] Add backend API tests using temporary local storage and synthetic data, including invalid inputs and access/origin restrictions.
+- [x] Define frontend/backend request and response shapes for email listing/details, category and priority filters, pagination, labels/corrections, sync status, and category statistics.
+- [x] Define the treemap aggregate response with category counts and total messages, covering the full local dataset; use human category labels before predictions and place messages with neither in Unclassified.
+- [x] Specify stable email IDs, date formatting, category/priority values, confidence representation, missing predictions, and validation errors in the contract.
+- [x] Scaffold FastAPI according to the [architecture's code organization](architecture.md#suggested-code-organization), keeping routes, services, persistence, IMAP, and ML responsibilities clear.
+- [x] Add local configuration with documented safe defaults and a secret-free `.env.example`.
+- [x] Add `.gitignore` coverage for secrets, private emails/datasets, SQLite files and sidecars, local model artifacts, and generated files.
+- [x] Define how local credentials are supplied without writing plaintext passwords into the application database or source code.
+- [x] Bind the backend to loopback by default, allow only intended frontend origins, and choose protection against unauthorized state-changing requests from other origins.
+- [x] Add input validation and limits for pagination, labels, message identifiers, and sync requests; return sanitized errors.
+- [x] Add backend API tests using temporary local storage and synthetic data, including invalid inputs and access/origin restrictions.
 
 **Milestone complete when:** the frontend contract is documented, the backend starts locally, and validated API operations can be exercised without a real mailbox.
 
+**Implementation and verification:** the [API contract](api-contract.md) documents versioned endpoints and the future frontend mapping. FastAPI uses standard-library SQLite with a version 1 schema, separate predictions and human labels, opt-in synthetic seeding, and explicit demo sync. All 20 backend tests, 12 frontend tests, frontend lint/type/build checks, `uv lock --check`, and a real loopback Uvicorn smoke check passed. The frontend fixture adapter remains active; IMAP and ML are deferred.
+
 ## 3. Implement local storage and safe IMAP ingestion
 
-- [ ] Create SQLite storage for emails, classifications, human labels/feedback, and sync state; choose the simplest suitable persistence and migration approach.
+- [x] Create SQLite storage for emails, classifications, human labels/feedback, and sync state; choose the simplest suitable persistence and migration approach. Initial storage was brought forward into task 2 using `sqlite3`, current human labels, and `PRAGMA user_version`; account-scoped ingestion and real sync bookkeeping remain below.
 - [ ] Preserve model predictions separately from human corrections so inference cannot overwrite training labels.
 - [ ] Define deduplication using stable IMAP identifiers, including account/mailbox scope and handling UID validity changes.
 - [ ] Implement IMAP connectivity over verified TLS, with timeouts, bounded fetches, and useful sanitized connection errors.

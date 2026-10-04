@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document describes the **proposed MVP architecture** for the local-first smart email classifier. The repository is currently a minimal Python project template; the services and workflows below are design targets, not claims about already implemented features.
+This document describes the MVP architecture for the local-first smart email classifier. Tasks 1 and 2 are implemented: the React fixture preview and the FastAPI/SQLite foundation. Real IMAP ingestion, frontend API integration, and ML workflows below remain design targets.
 
 The MVP retrieves mail over IMAP, stores the minimum useful data locally, supports manual labels, trains and evaluates a traditional ML category model, assigns a basic priority, and presents the results in a React Smart Inbox backed by a FastAPI service. It does not send mail or modify the mailbox.
 
@@ -63,7 +63,7 @@ Initial API capabilities should include:
 - Record a correction separately from the original prediction.
 - Return model/evaluation status and dashboard category counts and totals for the treemap.
 
-Exact route names and API versioning can be decided during implementation; this document does not prescribe a particular URL scheme.
+The implemented inbox, labels, category-statistics, and sync foundation use `/api/v1`; see the [API contract](api-contract.md) for exact shapes and behavior. Model/evaluation endpoints remain future work.
 
 ### IMAP adapter and email parser
 
@@ -73,7 +73,7 @@ Sync should be repeatable: use the provider message identifier (scoped to the ac
 
 ### Persistence
 
-SQLite is the initial database and requires no separate server. Use a persistence boundary (for example, a repository layer) so a later move to PostgreSQL does not leak database details into API or ML code. SQLAlchemy and Alembic are candidate implementation choices, not prerequisites imposed by this design.
+SQLite is the initial database and requires no separate server. Task 2 brings forward minimal persistence using the standard-library `sqlite3` module and a repository boundary. SQLAlchemy and Alembic are not dependencies. The version 1 schema separates emails, current predictions, human labels, and singleton sync state. It uses foreign keys, value constraints, parameterized queries, and short transactional operations. Schema versioning uses `PRAGMA user_version`; future schema changes need transactional migrations, and unknown versions are rejected without resetting data.
 
 The conceptual data model is:
 
@@ -84,7 +84,7 @@ The conceptual data model is:
 | Label / feedback | Human-provided ground truth | Category and priority labels, source (manual or correction), creation time |
 | Sync state | Incremental retrieval bookkeeping | Account/mailbox reference, cursor or last-sync time, last result |
 
-These are logical records; schema, retention, and whether feedback is stored as a separate table or fields are implementation decisions. Avoid storing email fields that are not needed by the MVP. Treat locally stored email and SQLite backups as sensitive user data.
+The current human-label table stores independently optional category and priority plus a server timestamp and manual/correction source; it does not retain feedback history. Partial label updates preserve omitted fields and never update the prediction table. Account-scoped IMAP identity, deduplication, parsing, retention, backups, and real sync bookkeeping remain task 3 work. Avoid storing unneeded fields and treat database files and backups as sensitive user data.
 
 ### Classification and training
 
@@ -124,19 +124,21 @@ Start with an explicit “sync now” operation. If periodic sync is added for t
 
 ## Suggested code organization
 
-The current repository has an `app/` directory, but no application modules yet. A small initial structure could be:
+The small backend uses focused modules with the same responsibility boundaries:
 
 ```text
 app/
-├── api/          # FastAPI routes and request/response schemas
-├── email/        # IMAP adapter and message parsing
-├── ml/           # preprocessing, training, evaluation, inference
-├── models/       # domain/schema definitions
-├── services/     # sync, labeling, and inbox use cases
-└── database/     # SQLite setup and repositories
-frontend/         # React application (to be added)
-data/             # Local-only data; sample fixtures may be checked in
-models/           # Local-only trained artifacts
+├── main.py       # Composition, lifespan, access controls, sanitized errors
+├── api.py        # Thin HTTP routes
+├── models.py     # Domain records and request/response schemas
+├── services.py   # Inbox, labeling, aggregates, and demo sync use cases
+├── database.py   # SQLite initialization and repository
+├── config.py     # Backend environment configuration
+└── demo.py       # Synthetic seed records
+frontend/         # React fixture preview; API integration is task 4
+tests/            # Synthetic API/config/storage checks
+data/             # Ignored local databases
+models/           # Future ignored local model artifacts
 ```
 
 Keep private email data, account credentials, tokens, database files, and trained artifacts out of version control. Synthetic or anonymized examples may be committed for documentation and automated checks.
@@ -145,7 +147,9 @@ Keep private email data, account credentials, tokens, database files, and traine
 
 The MVP should run from a clean local setup with the fewest necessary processes. Docker/Compose may package the React client and FastAPI backend; SQLite remains a mounted local file. A direct development workflow is also appropriate. PostgreSQL is a later option, not an MVP dependency.
 
-Secrets come from environment variables or a local secrets mechanism and are never committed. `.env.example` documents variable names without real credentials. Bind local endpoints to loopback by default where practical. Sanitize logs and never log full message bodies, credentials, or tokens.
+Secrets come from backend process environment variables and are never committed. An ignored private `.env` may be explicitly loaded by `uv run --env-file`; `.env.example` contains safe placeholders. Mailbox credential names are reserved for task 3, and no passwords are stored in SQLite or returned by the API.
+
+The documented Uvicorn startup binds to `127.0.0.1:8000` with access logging disabled. Host names are limited to loopback, and browser origins to an explicit local allowlist. All writes require JSON and `X-Meiruzone-Request: 1`, with an actual 4096-byte body limit; foreign/null origins are rejected. This protects against unsolicited browser writes, not programs already running as the local user. Errors and application logs omit input values, bodies, and private exception details. See the [implemented API contract](api-contract.md) and root README for startup, configuration, and verification.
 
 SMTP, cloud hosting, external LLM APIs, Redis, Celery, Kubernetes, and MLflow are outside the MVP runtime.
 
