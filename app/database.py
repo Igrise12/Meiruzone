@@ -130,8 +130,9 @@ class Repository:
         self.path = path
 
     @contextmanager
-    def connect(self):
-        connection = sqlite3.connect(self.path, timeout=5)
+    def connect(self, *, readonly: bool = False):
+        database = self.path.resolve().as_uri() + "?mode=ro" if readonly else self.path
+        connection = sqlite3.connect(database, timeout=5, uri=readonly)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.create_function(
@@ -292,7 +293,9 @@ class Repository:
 
     def category_training_examples(self) -> list[dict]:
         """Read human category ground truth, never unverified predictions."""
-        with self.connect() as connection:
+        with self.connect(readonly=True) as connection:
+            if connection.execute("PRAGMA user_version").fetchone()[0] != 2:
+                raise ValueError("Training requires an initialized version 2 database.")
             rows = connection.execute(
                 """SELECT e.id, e.sender, e.address, e.subject, e.body,
                     h.category, h.priority, h.confirmed_at, h.source

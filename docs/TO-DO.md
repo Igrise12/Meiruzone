@@ -7,7 +7,7 @@
 
 This checklist changes the delivery order to **frontend first**, using the frontend handed over from **Open Design** as the design and implementation base. Build and review the frontend with synthetic data before connecting the backend. The product scope and local-first requirements in the referenced documents still apply.
 
-Tasks 1–4 are complete. Task 2 brought forward the initial SQLite storage foundation; task 3 adds safe IMAP ingestion and real sync bookkeeping. The remaining later milestones are pending. Mark a task complete only when its deliverable and relevant checks are complete.
+Tasks 1–5 are complete. Task 2 brought forward the initial SQLite storage foundation; task 3 adds safe IMAP ingestion and real sync bookkeeping, and task 5 adds explicit category training/evaluation with private versioned artifacts. The remaining later milestones are pending. Mark a task complete only when its deliverable and relevant checks are complete.
 
 ## 1. Frontend first: receive and integrate the Open Design handover
 
@@ -105,17 +105,19 @@ Tasks 1–4 are complete. Task 2 brought forward the initial SQLite storage foun
 
 ## 5. Train and evaluate the category baseline
 
-- [ ] Build one shared preprocessing path for sender, subject, and body, used by training and inference.
-- [ ] Train a scikit-learn pipeline containing TF-IDF and Logistic Regression on human-labeled examples.
-- [ ] Handle insufficient labels or missing classes with a clear explanation instead of an invalid training run.
-- [ ] Use a reproducible train/test split, with a validation subset or cross-validation within the training data for tuning; fit preprocessing only on training folds and check for duplicate-message leakage across splits.
-- [ ] Report per-class precision, recall, F1, macro F1, and a confusion matrix; document class counts and model limitations.
-- [ ] Select the Needs Review confidence threshold using validation data, retaining the held-out test set for final evaluation.
-- [ ] Save the fitted preprocessing and estimator together in a local, versioned Joblib artifact with label mapping and evaluation metadata.
-- [ ] Keep artifacts and private training data out of Git; load artifacts only from trusted local sources.
-- [ ] Test preprocessing, saved-model loading, prediction classes/confidence, empty or malformed fields, and insufficient-data behavior.
+- [x] Build one shared preprocessing path for sender, subject, and body, used by training and inference.
+- [x] Train a scikit-learn pipeline containing TF-IDF and Logistic Regression on human-labeled examples.
+- [x] Handle insufficient labels or missing classes with a clear explanation instead of an invalid training run.
+- [x] Use a reproducible train/test split, with a validation subset or cross-validation within the training data for tuning; fit preprocessing only on training folds and check for duplicate-message leakage across splits.
+- [x] Report per-class precision, recall, F1, macro F1, and a confusion matrix; document class counts and model limitations.
+- [x] Select the Needs Review confidence threshold using validation data, retaining the held-out test set for final evaluation.
+- [x] Save the fitted preprocessing and estimator together in a local, versioned Joblib artifact with label mapping and evaluation metadata.
+- [x] Keep artifacts and private training data out of Git; load artifacts only from trusted local sources.
+- [x] Test preprocessing, saved-model loading, prediction classes/confidence, empty or malformed fields, and insufficient-data behavior.
 
 **Milestone complete when:** a repeatable local training command produces an evaluated model that can be loaded and used for valid predictions.
+
+**Implementation and verification:** `uv run python -m app.train` reads confirmed category labels through a read-only version 2 SQLite connection, without storage initialization, migration, seeding, or IMAP access. Shared Unicode/case/whitespace preprocessing, exact duplicate collapse/conflict detection, and a ten-distinct-example floor train at least two supported categories and report excluded categories. Seeded stratified 60/20/20 splits keep TF-IDF fitting on training data; validation macro F1 selects C from 0.1/1/10, and validation selects a 90% accepted-accuracy cutoff with at least five accepted examples or review-all fallback. The unchanged selected model receives one held-out evaluation. Private, atomically published Joblib/JSON runs record class ordering, metrics, cutoff, versions, counts, and limitations; loading checks compatibility and requires trusted local provenance. All 62 backend/ML tests (including 10 focused ML tests), the real training-command smoke with temporary synthetic storage, fresh-process model loading/predictions, `uv lock --check`, and `git diff --check` passed. Tests confirm held-out vocabulary isolation, threshold boundaries/fallback, private permissions, read-only storage, sanitized output, and retained prior artifacts after failures. No personal mailbox or database was accessed. Backend activation, automatic inference, priority, and applying the artifact cutoff remain task 6.
 
 ## 6. Add inference, priority, and the feedback loop
 

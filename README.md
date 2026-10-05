@@ -4,7 +4,7 @@ A local-first Smart Inbox that will classify email, estimate its priority, and l
 
 ## Project status
 
-The React Smart Inbox reviews locally stored email and retains an explicit synthetic development mode. The FastAPI backend provides validated inbox, labeling, category statistics, and explicit read-only IMAP sync backed by SQLite. Tasks 1–4 are implemented. The frontend uses the local API by default, with an explicit offline fixture mode. Training and trained models remain planned work.
+The React Smart Inbox reviews locally stored email and retains an explicit synthetic development mode. The FastAPI backend provides validated inbox, labeling, category statistics, and explicit read-only IMAP sync backed by SQLite. Tasks 1–5 are implemented, including local category training, evaluation, and versioned model artifacts. The frontend uses the local API by default, with an explicit offline fixture mode. Backend inference and independent priority assignment remain task 6.
 
 Development starts with the **Open Design frontend handover**, using its design and source as the foundation. The frontend runs with synthetic email data, followed by backend integration and the ML workflow. See the [project task list](docs/TO-DO.md) for the current delivery order and completion criteria.
 
@@ -39,7 +39,7 @@ flowchart TD
 
 The category baseline uses **sender + subject + body → TF-IDF → Logistic Regression** to produce a category and confidence. Priority is assigned independently using simple rules or a separate baseline model. Retraining is a deliberate local operation in the MVP.
 
-Model evaluation will include per-class precision, recall, F1, macro F1, and a confusion matrix, with held-out data to measure performance.
+Model evaluation includes per-class precision, recall, F1, macro F1, and a confusion matrix, with held-out data to measure performance.
 
 ## Proposed technology
 
@@ -54,7 +54,7 @@ Model evaluation will include per-class precision, recall, F1, macro F1, and a c
 | Packaging | Docker and optional Docker Compose |
 | Continuous integration | GitHub Actions |
 
-React/API integration, persistent human labeling, FastAPI, SQLite, and safe IMAP ingestion are implemented. Machine learning, packaging, and CI remain later milestones.
+React/API integration, persistent human labeling, FastAPI, SQLite, safe IMAP ingestion, and category training/evaluation are implemented. Backend inference, priority assignment, packaging, and CI remain later milestones.
 
 ## Privacy and security
 
@@ -81,7 +81,7 @@ Frontend CI should start in the first phase and expand as backend and ML compone
 
 ```text
 Meiruzone/
-├── app/                  # FastAPI routes, models, services, SQLite, configuration
+├── app/                  # FastAPI, SQLite, ingestion, shared ML helpers, training CLI
 ├── docker/               # Placeholder for container configuration
 ├── docs/
 │   ├── architecture.md   # Proposed system design and data flows
@@ -93,15 +93,16 @@ Meiruzone/
 │   ├── tests/            # Component and aggregate tests
 │   └── README.md         # Frontend setup and verification commands
 ├── playground/           # Placeholder for experiments and notebooks
-├── tests/                # Backend API/storage tests with temporary synthetic data
+├── tests/                # Backend and ML tests with temporary synthetic data
 ├── data/                 # Ignored local database; created at backend startup
+├── models/               # Ignored private versioned model runs; created by training
 ├── .env.example          # Safe backend configuration template
 ├── hello.py              # Python starter entry point
 ├── pyproject.toml        # Python metadata and dependencies
 └── uv.lock               # Locked Python dependencies
 ```
 
-The backend creates local data storage on startup. The model artifact directory will be added with the ML workflow.
+The backend creates local data storage on startup. Training creates the private model artifact directory only after fitting and evaluation succeed.
 
 ## Set up the backend
 
@@ -225,7 +226,7 @@ Open a stored message and explicitly choose category and/or priority. Missing hu
 
 Dashboard counts cover the complete database, independent of filters and pages. CSV export downloads all human labels for review, keeps predicted and confirmed columns separate, and escapes spreadsheet formulas. Its content is private local data.
 
-Task 5 can consume human category labels directly, without exporting personal email text:
+Training consumes human category labels directly, without exporting personal email text:
 
 ```python
 from app.config import Settings
@@ -235,7 +236,52 @@ repository = Repository(Settings.from_env().database_path)
 examples = repository.category_training_examples()
 ```
 
-Each example contains id, sender, address, subject, body, confirmed category, optional priority, confirmed_at, and source. The reader excludes predictions and priority-only labels, writes nothing, and expects an initialized database. It uses the backend's configured database path. Model fitting and evaluation remain task 5.
+Each example contains id, sender, address, subject, body, confirmed category, optional priority, confirmed_at, and source. The reader excludes predictions and priority-only labels, opens SQLite read-only, and expects an initialized version 2 database. It never creates or migrates storage.
+
+### Train and evaluate the category model
+
+Run from the repository root after labeling stored messages:
+
+```bash
+uv run python -m app.train
+```
+
+The default database follows `MEIRUZONE_DATABASE_PATH`, or `data/meiruzone.sqlite3`. To load private environment configuration explicitly, use `uv run --env-file .env python -m app.train`. To select an existing database and a different private output directory:
+
+```bash
+uv run python -m app.train --database data/labeled.sqlite3 --output-dir models
+```
+
+Training never connects to IMAP, seeds demo messages, modifies labels, or activates a model. It reads a snapshot of confirmed categories and requires at least two categories with **10 distinct usable messages each**. Categories with fewer examples are excluded and listed separately from missing categories; the model can predict only its supported categories. Ten examples is a minimum readiness check, not evidence of model quality. The seeded demo database alone does not contain enough labels.
+
+Sender name/address, subject, and body share Unicode NFKC, case, and whitespace normalization in the saved pipeline. Missing fields become empty strings; invalid field types stop training with sanitized errors. Messages with no TF-IDF word tokens are excluded. Identical normalized messages collapse to one example, while conflicting labels for identical messages stop training for correction. Similar templates and threads are not grouped and can still inflate evaluation results.
+
+Distinct examples are ordered by normalized content and split with seed `42`: approximately **60% training, 20% validation, and 20% test**, stratified by category. Integer rounding can slightly change proportions. Complete normalization → default TF-IDF (no stop words) → Logistic Regression pipelines fit only the training split. Validation macro F1 selects `C` from `0.1`, `1`, and `10`, favoring smaller `C` on ties. The selected fitted pipeline is retained without refitting validation or test examples.
+
+Confidence is the maximum class probability × 100. Validation selects the lowest observed cutoff with at least five accepted examples and **90% or greater accuracy**. Confidence equal to the cutoff is accepted; lower confidence needs review. A null `review_threshold` means **review all**, including scores of 100. Validation is reused for parameter and cutoff selection, so small datasets have uncertain estimates. Probabilities are uncalibrated, and reaching the validation target does not guarantee future accuracy.
+
+The test split is evaluated once after the model and cutoff are frozen. Console output and `evaluation.json` contain aggregate class counts, unsupported categories, per-class precision/recall/F1/support, macro F1, a confusion matrix (rows are actual classes; columns are predicted classes in `supported_classes` order), and validation/test accepted accuracy and coverage. Accuracy/coverage are fractions from 0–1; confidence/cutoff use 0–100. No message text, addresses, message IDs, or credentials are included in the report.
+
+Each successful run creates `models/category-<UTC timestamp>-<unique suffix>/` with `model.joblib` and `evaluation.json`. Both files publish together after a load check, using directory permissions `0700` and file permissions `0600`. Failures preserve previous versions. Artifacts bundle the fitted pipeline, label ordering, evaluation metadata, preprocessing/artifact versions, split counts, parameters, cutoff, and Python/scikit-learn/NumPy/SciPy/Joblib versions. Repeating a run with unchanged content, labels, and environment reproduces splits and metrics; run IDs and timestamps are new.
+
+Treat both files as private. A fitted TF-IDF vocabulary can contain private email terms even though the evaluation report contains only aggregates. The default `/models/` directory and Joblib files are ignored by Git. If choosing another output directory, add it to your ignore rules before training so its JSON reports also remain private. Include model runs in protected local backups if needed; remove their version directories explicitly when deleting local data.
+
+Load a specific run only when you trust its local origin:
+
+```python
+from pathlib import Path
+from app.ml import load_model, predict_category
+
+# Replace this with the exact run directory printed by your training command.
+model = load_model(Path("models/category-<UTC timestamp>-<unique suffix>"))
+prediction = predict_category(model, {
+    "sender": "Example Hiring", "address": "hiring@example.test",
+    "subject": "Interview invitation", "body": "Please confirm your interview time.",
+})
+print(prediction.category, prediction.confidence)
+```
+
+This helper returns the existing category/confidence/model-version record, with priority and prediction time unset. It rejects messages with no usable text. Loading checks format, preprocessing version, class ordering, fitted pipeline, and exact recorded environment versions; missing, corrupt, or incompatible runs produce sanitized errors. Retrain after an incompatible environment change. Joblib loading can execute code: metadata validation does **not** establish trust. Never load an untrusted download or uploaded model. See [scikit-learn's persistence guidance](https://scikit-learn.org/stable/model_persistence.html). Backend activation and application of this cutoff to the Smart Inbox remain task 6; the backend's current review setting is unchanged.
 
 ## Testing and quality
 
@@ -246,7 +292,7 @@ uv run python -m unittest discover -s tests
 uv lock --check
 ```
 
-Backend tests use temporary SQLite files and synthetic messages, covering API validation, access restrictions, migration rollback, MIME parsing, selective IMAP fetches, TLS/timeouts, deduplication, interrupted/concurrent sync, retained labels/predictions, and sanitized errors/debug logs. No personal mailbox or credentials are needed. Frontend and HTTP integration checks are listed above. CI and ML checks remain planned:
+Backend tests use temporary SQLite files and synthetic messages, covering API validation, access restrictions, migration rollback, MIME parsing, selective IMAP fetches, TLS/timeouts, deduplication, interrupted/concurrent sync, retained labels/predictions, and sanitized errors/debug logs. ML checks cover preprocessing, insufficient labels, duplicate conflicts, stratification, held-out vocabulary isolation, thresholds, private/atomic artifacts, corrupt or incompatible models, safe CLI output, and fresh-process predictions. No personal mailbox or credentials are needed. Run ML checks alone with `uv run python -m unittest discover -s tests -p test_ml.py`. Frontend and HTTP integration checks are listed above. Remaining delivery and acceptance checks include:
 
 - Frontend filtering, labeling, correction, treemap category navigation, loading/error states, accessibility, and safe content rendering.
 - Dashboard category counts, percentages, human-label precedence, Unclassified messages, and refresh after sync or corrections.

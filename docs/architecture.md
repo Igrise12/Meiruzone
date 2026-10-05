@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document describes the MVP architecture for the local-first smart email classifier. Tasks 1–4 are implemented: the React Smart Inbox/API integration, FastAPI/SQLite foundation, safe IMAP ingestion, persistent human labels, and the local category training-data reader. ML workflows below remain design targets.
+This document describes the MVP architecture for the local-first smart email classifier. Tasks 1–5 are implemented: React Smart Inbox/API integration, FastAPI/SQLite, safe IMAP ingestion, persistent human labels, and local category training/evaluation with versioned artifacts. Backend inference, priority assignment, and model activation remain task 6 design targets.
 
 The MVP retrieves mail over IMAP, stores the minimum useful data locally, supports manual labels, trains and evaluates a traditional ML category model, assigns a basic priority, and presents the results in a React Smart Inbox backed by a FastAPI service. It does not send mail or modify the mailbox.
 
@@ -91,17 +91,21 @@ Human labels store independently optional category and priority plus a server ti
 
 ### Classification and training
 
-Category and priority are independent outputs. The first category baseline uses a scikit-learn pipeline over sender, subject, and body:
+Category and priority are independent outputs. `uv run python -m app.train` trains the category baseline from human labels using a read-only version 2 SQLite connection. It does not initialize/migrate storage, seed messages, access IMAP, or activate a model. The scikit-learn pipeline combines sender name/address, subject, and body:
 
 ```text
 normalized email text → TF-IDF → Logistic Regression → category + confidence
 ```
 
-The starting category set is Recruitment, LinkedIn, Personal, Transaction, Newsletter, Promotion, Spam, and Other. The taxonomy may change after inspecting labeled data. Low-confidence predictions are surfaced as “Needs Review”; the threshold should be configurable and selected from validation results rather than assumed to be a universal constant.
+The starting category set is Recruitment, LinkedIn, Personal, Transaction, Newsletter, Promotion, Spam, and Other. Training requires at least two categories with ten distinct usable examples each; missing and underrepresented categories are reported and excluded. Shared preprocessing applies Unicode NFKC, case folding, and whitespace cleanup; missing fields are empty, invalid field types are rejected, and tokenless examples are excluded. Exact normalized duplicates collapse before splitting; conflicting duplicate labels stop training. Similar templates/threads are not grouped, a documented limitation.
+
+Seed 42 produces stratified approximately 60/20/20 training/validation/test splits after deterministic content ordering. Full pipelines fit only the training split, preventing held-out vocabulary/IDF leakage. Validation macro F1 selects Logistic Regression C from 0.1/1/10 with smaller-C tie breaking; TF-IDF keeps its defaults without a stop-word list. The selected fitted model is not refitted on validation/test examples. The test set is evaluated once after selection, reporting per-class precision/recall/F1/support, macro F1, and a confusion matrix ordered by the saved supported classes.
+
+Confidence is maximum class probability × 100. The validation-selected cutoff accepts at least five messages at 90% or greater observed accuracy, taking the lowest qualifying confidence; equality is accepted. A null cutoff means review all, including confidence 100. Validation/test review coverage and accepted accuracy are recorded separately. Validation reuse for tuning/cutoff selection and small sample counts limit reliability; probabilities are uncalibrated and validation accuracy does not guarantee future accuracy. Applying this artifact cutoff to backend Needs Review remains task 6.
 
 Priority is High, Medium, or Low. Begin with transparent rules or a separate simple model; do not conflate priority with category. Model training is an explicit local command or controlled workflow in the MVP, not continuous or automatic retraining. Training must use a train/test split and report per-class precision, recall, F1, macro F1, and a confusion matrix. Accuracy alone is not sufficient for imbalanced labels.
 
-Persist the fitted preprocessing and estimator together as a versioned local artifact (Joblib is the proposed format). The runtime loads the artifact for inference and handles a missing model gracefully, such as exposing predictions as unavailable until a model is trained. Artifacts and datasets containing personal data must be excluded from Git.
+Each training run atomically publishes a private version directory under ignored `models/`, containing a Joblib bundle of fitted preprocessing/estimator/metadata and an aggregate JSON evaluation report. Metadata records artifact/preprocessing versions, model version/time, supported class ordering, class/split counts, parameters, review cutoff, limitations, and exact dependency versions. A staged load check precedes publication; failures preserve older runs. Directories/files use 0700/0600 permissions. The loader requires an explicitly selected trusted local run and rejects missing/corrupt/incompatible artifacts; checks do not make untrusted Joblib files safe. Model vocabularies can contain private terms and must remain out of Git. See the [training guide](../README.md#train-and-evaluate-the-category-model) for commands, privacy, metrics, and recovery. Backend activation and missing-model UI integration remain task 6.
 
 ### Background synchronization
 
@@ -139,11 +143,13 @@ app/
 ├── config.py     # Backend environment configuration
 ├── imap.py       # Verified TLS, read-only selection, selective bounded fetches
 ├── parser.py     # Header decoding, normalized records, safe HTML-to-text
+├── ml.py         # Shared category preprocessing, trusted loading, prediction helper
+├── train.py      # Explicit category fitting, validation/test evaluation, atomic artifacts
 └── demo.py       # Synthetic seed records
 frontend/         # React Smart Inbox, HTTP/fixture adapters, and integration checks
-tests/            # Synthetic API/config/storage/IMAP/parser checks
+tests/            # Synthetic API/config/storage/IMAP/parser/ML checks
 data/             # Ignored local databases
-models/           # Future ignored local model artifacts
+models/           # Ignored private versioned model artifacts and evaluation reports
 ```
 
 Keep private email data, account credentials, tokens, database files, and trained artifacts out of version control. Synthetic or anonymized examples may be committed for documentation and automated checks.
