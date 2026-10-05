@@ -239,6 +239,8 @@ class Repository:
         if query.needs_review:
             conditions.append(NEEDS_REVIEW)
             parameters.append(threshold)
+        if query.has_human_label:
+            conditions.append("h.email_id IS NOT NULL")
         if query.q.strip():
             conditions.append(
                 "instr(casefold(e.sender || ' ' || e.address || ' ' || e.subject || ' ' || "
@@ -287,6 +289,17 @@ class Repository:
                 + JOIN + f" GROUP BY {EFFECTIVE_CATEGORY}",
             ).fetchall()
         return {row["category"]: row["count"] for row in rows}
+
+    def category_training_examples(self) -> list[dict]:
+        """Read human category ground truth, never unverified predictions."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT e.id, e.sender, e.address, e.subject, e.body,
+                    h.category, h.priority, h.confirmed_at, h.source
+                FROM emails e JOIN human_labels h ON h.email_id = e.id
+                WHERE h.category IS NOT NULL ORDER BY e.id""",
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def sync_status(self) -> dict:
         with self.connect() as connection:

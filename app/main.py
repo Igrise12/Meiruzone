@@ -145,6 +145,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         known_fields = {
             "body", "path", "query", "header", "email_id", "q", "category", "priority",
             "needsReview", "needs_review", "limit", "offset", "source", "mode", "X-Meiruzone-Request",
+            "hasHumanLabel", "has_human_label",
         }
         fields = []
         for item in error.errors():

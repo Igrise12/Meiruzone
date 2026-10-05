@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
-import { fixtureAdapter, priorityOf, type InboxAdapter } from "./api";
-import { categories, priorities, type Category, type CategoryFilter, type CategoryStat, type Email, type HumanLabel, type LabelsById, type Priority } from "./data";
+import { ApiError, confirmedLabelsCsv, createHttpAdapter, priorityOf, type CategoryStats, type EmailDetail as StoredEmail, type EmailSummary, type InboxAdapter, type LabelPatch, type SyncStatus, receivedText } from "./api";
+import { categories, priorities, type Category, type CategoryFilter, type HumanLabel, type Priority } from "./data";
 import { buildTreemap, categoryColors, type TreemapNode } from "./treemap";
 
 type Page = "inbox" | "review" | "models";
@@ -22,12 +22,21 @@ function Icon({ name }: { name: "mail" | "review" | "model" | "plus" | "search" 
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
 
-function categoryOf(email: Email, labels: LabelsById): CategoryFilter {
-  return labels[email.id]?.category ?? email.prediction?.category ?? "Unclassified";
+function categoryOf(email: EmailSummary): CategoryFilter {
+  return email.humanLabel?.category ?? email.prediction?.category ?? "Unclassified";
 }
 
-function isNeedsReview(email: Email, labels: LabelsById) {
-  return !labels[email.id] && email.prediction?.confidence !== undefined && email.prediction.confidence < 70;
+const httpAdapter = createHttpAdapter(import.meta.env.VITE_API_BASE_URL);
+type Draft = { category: Category | ""; priority: Priority | "" };
+function syncFailure(code: string | null): string {
+  switch (code) {
+    case "sync_unavailable": return "Configure IMAP in the backend environment to enable sync.";
+    case "sync_in_progress": return "A sync is already running. Its progress appears here.";
+    case "imap_auth_failed": return "Mailbox login failed. Check the backend credentials and retry.";
+    case "imap_uidvalidity_changed": return "Mailbox identifiers changed. Follow the database recovery instructions before retrying.";
+    case "imap_message_skipped": return "Some messages could not be imported. Saved messages are available; retry is safe.";
+    default: return "Sync did not finish. Check the connection and try again. Saved messages are retained.";
+  }
 }
 
 function TreemapBranch({ node, onSelect, selected, depth = 0 }: { node: TreemapNode; onSelect: (category: CategoryFilter) => void; selected: CategoryFilter | "All"; depth?: number }) {
@@ -50,57 +59,121 @@ function TreemapBranch({ node, onSelect, selected, depth = 0 }: { node: TreemapN
   );
 }
 
-function App({ adapter = fixtureAdapter }: { adapter?: InboxAdapter }) {
-  const [emails, setEmails] = useState<Email[]>([]);
-  const [labels, setLabels] = useState<LabelsById>({});
-  const [stats, setStats] = useState<CategoryStat[]>([]);
+function App({ adapter = httpAdapter }: { adapter?: InboxAdapter }) {
+  const [emails, setEmails] = useState<EmailSummary[]>([]);
+  const [matchedTotal, setMatchedTotal] = useState(0);
+  const [stats, setStats] = useState<CategoryStats | null>(null);
   const [loadingStats, setLoadingStats] = useState(true);
   const [statsError, setStatsError] = useState("");
+  const [counts, setCounts] = useState<{ review: number; labeled: number } | null>(null);
+  const [countsError, setCountsError] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [page, setPage] = useState<Page>("inbox");
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
-  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter | "All">("All");
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("All");
   const [priorityFilter, setPriorityFilter] = useState<Priority | "All">("All");
   const [search, setSearch] = useState("");
+  const [offset, setOffset] = useState(0);
+  const [refresh, setRefresh] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<StoredEmail | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [toast, setToast] = useState("");
   const [syncing, setSyncing] = useState(false);
-  const [syncMessage, setSyncMessage] = useState("example messages, no live account connected.");
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [syncCheck, setSyncCheck] = useState(0);
+  const [syncMode, setSyncMode] = useState<"recent" | "unread">("recent");
   const [syncError, setSyncError] = useState("");
+  const [syncRequestError, setSyncRequestError] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [exporting, setExporting] = useState(false);
   const [mobileDetail, setMobileDetail] = useState(false);
-  const [draftCategory, setDraftCategory] = useState<Category>("Other");
-  const [draftPriority, setDraftPriority] = useState<Priority>("Medium");
   const dialogRef = useRef<HTMLDialogElement>(null);
   const toastTimer = useRef<number | undefined>(undefined);
+  const lastSyncState = useRef<string | null>(null);
 
   useEffect(() => {
-    let alive = true;
-    Promise.all([adapter.getEmails(), adapter.getLabels()]).then(([nextEmails, nextLabels]) => {
-      if (!alive) return;
-      setEmails(nextEmails);
-      setLabels(nextLabels);
-      setSelectedId(nextEmails[0]?.id ?? null);
-      setLoading(false);
-      adapter.getCategoryStats().then((nextStats) => {
-        if (!alive) return;
-        setStats(nextStats);
-        setLoadingStats(false);
-      }).catch(() => {
-        if (!alive) return;
-        setStatsError("Category counts could not be loaded. Reload the inbox to try again.");
-        setLoadingStats(false);
-      });
+    const controller = new AbortController();
+    setLoading(true);
+    setLoadError("");
+    adapter.listEmails({ q: search, category: categoryFilter === "All" ? undefined : categoryFilter,
+      priority: priorityFilter === "All" ? undefined : priorityFilter, needsReview: quickFilter === "review", limit: 50, offset,
+    }, controller.signal).then((result) => {
+      if (controller.signal.aborted) return;
+      if (!result.items.length && offset > 0 && result.total > 0) {
+        setOffset(Math.floor((result.total - 1) / 50) * 50);
+        return;
+      }
+      setEmails(result.items);
+      setMatchedTotal(result.total);
+      setSelectedId((id) => result.items.some((email) => email.id === id) ? id : result.items[0]?.id ?? null);
     }).catch(() => {
-      if (!alive) return;
-      setLoadError("Messages could not be loaded. Try reloading the sample inbox.");
-      setLoading(false);
-      setLoadingStats(false);
-    });
-    return () => { alive = false; };
-  }, [adapter]);
+      if (!controller.signal.aborted) setLoadError("Messages could not be loaded. Check that the local backend is running and retry.");
+    }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [adapter, categoryFilter, priorityFilter, quickFilter, search, offset, refresh]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoadingStats(true);
+    setStatsError("");
+    adapter.getCategoryStats(controller.signal).then((result) => {
+      if (!controller.signal.aborted) setStats(result);
+    }).catch(() => {
+      if (!controller.signal.aborted) setStatsError("Category counts could not be refreshed. Retry to load current totals.");
+    }).finally(() => { if (!controller.signal.aborted) setLoadingStats(false); });
+    setCounts(null);
+    setCountsError("");
+    Promise.all([adapter.listEmails({ needsReview: true, limit: 1 }, controller.signal), adapter.listEmails({ hasHumanLabel: true, limit: 1 }, controller.signal)]).then(([review, labeled]) => {
+      if (!controller.signal.aborted) setCounts({ review: review.total, labeled: labeled.total });
+    }).catch(() => { if (!controller.signal.aborted) setCountsError("Review and confirmed-label counts are unavailable. Retry to refresh them."); });
+    return () => controller.abort();
+  }, [adapter, refresh]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setDetail(null);
+    setDetailError("");
+    setLoadingDetail(selectedId !== null);
+    if (selectedId !== null) adapter.getEmail(selectedId, controller.signal).then((email) => {
+      if (!controller.signal.aborted) setDetail(email);
+    }).catch(() => {
+      if (!controller.signal.aborted) setDetailError("This message could not be loaded. Retry to open it.");
+    }).finally(() => { if (!controller.signal.aborted) setLoadingDetail(false); });
+    return () => controller.abort();
+  }, [adapter, selectedId, refresh]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer: number | undefined;
+    async function check() {
+      try {
+        const status = await adapter.getSyncStatus(controller.signal);
+        if (controller.signal.aborted) return;
+        const finished = lastSyncState.current === "running" && status.state !== "running";
+        lastSyncState.current = status.state;
+        setSyncStatus(status);
+        setSyncError("");
+        if (finished) {
+          setSyncRequestError("");
+          setRefresh((value) => value + 1);
+        }
+        if (status.state === "running" || syncing) timer = window.setTimeout(check, 1000);
+      } catch {
+        if (!controller.signal.aborted) {
+          setSyncStatus(null);
+          setSyncError("Sync status could not be loaded. Check the local backend and retry the status check.");
+        }
+      }
+    }
+    void check();
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [adapter, syncCheck, syncing]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -108,136 +181,113 @@ function App({ adapter = fixtureAdapter }: { adapter?: InboxAdapter }) {
     if (dialogOpen && !dialog.open) dialog.showModal();
     if (!dialogOpen && dialog.open) dialog.close();
   }, [dialogOpen]);
-
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
 
-  const tree = useMemo(() => buildTreemap(stats), [stats]);
-  const allReview = useMemo(() => emails.filter((email) => isNeedsReview(email, labels)).length, [emails, labels]);
-  const confirmedCount = Object.keys(labels).length;
-
-  const visibleEmails = useMemo(() => {
-    const query = search.trim().toLocaleLowerCase();
-    return emails.filter((email) => {
-      const effectiveCategory = categoryOf(email, labels);
-      const priority = priorityOf(email, labels);
-      if (categoryFilter !== "All" && effectiveCategory !== categoryFilter) return false;
-      if (priorityFilter !== "All" && priority !== priorityFilter) return false;
-      if (quickFilter === "review" && !isNeedsReview(email, labels)) return false;
-      if (quickFilter === "high" && priority !== "High") return false;
-      if (query && ![email.sender, email.address, email.subject, email.body, effectiveCategory, priority].join(" ").toLocaleLowerCase().includes(query)) return false;
-      return true;
-    });
-  }, [emails, labels, categoryFilter, priorityFilter, quickFilter, search]);
-
-  const selectedEmail = visibleEmails.find((email) => email.id === selectedId) ?? null;
-
-  useEffect(() => {
-    if (!visibleEmails.some((email) => email.id === selectedId)) setSelectedId(visibleEmails[0]?.id ?? null);
-  }, [visibleEmails, selectedId]);
-
-  useEffect(() => {
-    if (!selectedEmail) return;
-    const label = labels[selectedEmail.id];
-    setDraftCategory(label?.category ?? selectedEmail.prediction?.category ?? "Other");
-    setDraftPriority(label?.priority ?? selectedEmail.prediction?.priority ?? "Medium");
-  }, [selectedEmail, labels]);
+  const tree = useMemo(() => buildTreemap(stats?.categories ?? []), [stats]);
+  const selectedEmail = detail?.id === selectedId ? detail : null;
+  const label = selectedEmail?.humanLabel ?? null;
+  const draft: Draft = selectedId && drafts[selectedId] ? drafts[selectedId] : { category: label?.category ?? "", priority: label?.priority ?? "" };
+  const allReview = counts?.review ?? "—";
+  const confirmedCount = counts?.labeled ?? null;
+  const globalTotal = !loadingStats && !statsError ? stats?.total ?? null : null;
+  const syncRunning = syncing || syncStatus?.state === "running";
+  const syncMessage = !syncStatus ? "Checking local sync status…" : syncStatus.demo ?
+    "Demo data · sync is a no-op; no mailbox is contacted." : syncStatus.state === "running" ?
+    `Syncing ${syncStatus.processed} of ${syncStatus.total} messages…` : !syncStatus.available ?
+    "IMAP is not configured. Stored messages remain available." : syncStatus.state === "idle" ?
+    "Ready to sync recent or unread mail." :
+    `${syncStatus.state === "partial" ? "Partial sync" : syncStatus.state === "failed" ? "Sync failed" : "Last sync"}${syncStatus.completedAt ? ` · ${receivedText(syncStatus.completedAt)}` : ""} · ${syncStatus.imported} new · ${syncStatus.processed} processed · ${syncStatus.skipped} skipped`;
+  const outcomeError = syncStatus?.errorCode ? syncFailure(syncStatus.errorCode) : "";
 
   function notify(message: string) {
     setToast(message);
     window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(""), 2800);
   }
-
+  function refreshInbox() { setRefresh((value) => value + 1); }
   function setFilter(next: QuickFilter) {
     setQuickFilter(next);
+    if (next === "high") setPriorityFilter("High");
+    else if (quickFilter === "high") setPriorityFilter("All");
+    setOffset(0);
     setPage(next === "review" ? "review" : "inbox");
     setMobileDetail(false);
   }
-
   function selectCategory(category: CategoryFilter) {
     setCategoryFilter(category);
     setPriorityFilter("All");
     setQuickFilter("all");
+    setOffset(0);
     setPage("inbox");
     setMobileDetail(false);
     requestAnimationFrame(() => document.getElementById("messages-title")?.scrollIntoView?.({ behavior: "smooth", block: "start" }));
   }
-
-  async function saveLabels() {
-    if (!selectedEmail) return;
-    const next: HumanLabel = { category: draftCategory, priority: draftPriority, confirmedAt: new Date().toISOString() };
-    setSaving(true);
-    try {
-      await adapter.saveLabel(selectedEmail.id, next);
-      setLabels((current) => ({ ...current, [selectedEmail.id]: next }));
-      notify("Your labels are saved on this device.");
-      setStatsError("");
-      setLoadingStats(true);
-      adapter.getCategoryStats().then((nextStats) => {
-        setStats(nextStats);
-        setLoadingStats(false);
-      }).catch(() => {
-        setStatsError("Category counts could not be refreshed. Reload the inbox to try again.");
-        setLoadingStats(false);
-      });
-    } catch {
-      notify("Labels could not be saved. Your changes are still here—try again.");
-    } finally {
-      setSaving(false);
-    }
+  function editDraft(field: keyof Draft, value: Category | Priority | "") {
+    if (!selectedId) return;
+    setDrafts((current) => ({ ...current, [selectedId]: { ...draft, [field]: value } }));
   }
-
+  const hasChanges = Boolean((draft.category && draft.category !== label?.category) || (draft.priority && draft.priority !== label?.priority));
+  async function saveLabels() {
+    if (!selectedEmail || !hasChanges || saving) return;
+    const id = selectedEmail.id;
+    const patch: LabelPatch = { source: "manual" };
+    if (draft.category && draft.category !== label?.category) patch.category = draft.category;
+    if (draft.priority && draft.priority !== label?.priority) patch.priority = draft.priority;
+    if ((patch.category && (label?.category || (selectedEmail.prediction?.category && patch.category !== selectedEmail.prediction.category))) ||
+        (patch.priority && (label?.priority || (selectedEmail.prediction?.priority && patch.priority !== selectedEmail.prediction.priority)))) patch.source = "correction";
+    setSaving(true);
+    setSaveError("");
+    try {
+      const saved = await adapter.saveLabel(id, patch);
+      setDetail((current) => current?.id === id ? { ...current, humanLabel: saved } : current);
+      setDrafts((current) => { const next = { ...current }; delete next[id]; return next; });
+      notify("Your labels are saved on this device.");
+      refreshInbox();
+    } catch {
+      setSaveError("Labels could not be saved. Your changes are still here—try again.");
+    } finally { setSaving(false); }
+  }
   async function syncInbox() {
+    if (syncRunning || !syncStatus?.available) return;
     setSyncing(true);
     setSyncError("");
+    setSyncRequestError("");
+    setSyncCheck((value) => value + 1);
     try {
-      const result = await adapter.sync();
-      setSyncMessage(`example messages, checked just now${result.imported ? ` · ${result.imported} new` : ""}`);
-      notify("Sample inbox is up to date.");
-    } catch {
-      setSyncError("Sync did not finish. Check the connection and try again.");
+      const result = await adapter.sync(syncMode);
+      setSyncStatus(result);
+      notify(result.demo ? "Demo sync complete; no mailbox was contacted." : result.state === "partial" ? "Sync finished with partial results. Saved messages are available." : "Local inbox is up to date.");
+    } catch (error) {
+      setSyncRequestError(error instanceof ApiError ? syncFailure(error.code) : "The sync request could not be confirmed. Check the latest status before retrying. Saved messages are retained.");
     } finally {
       setSyncing(false);
+      setSyncCheck((value) => value + 1);
+      refreshInbox();
     }
   }
-
-  function exportLabels() {
-    const labelled = emails.filter((email) => labels[email.id]);
-    const rows = [["message_id", "sender", "subject", "predicted_category", "predicted_priority", "confidence", "confirmed_category", "confirmed_priority", "confirmed_at"]];
-    labelled.forEach((email) => {
-      const label = labels[email.id];
-      rows.push([email.id, email.sender, email.subject, email.prediction?.category ?? "", email.prediction?.priority ?? "", String(email.prediction?.confidence ?? ""), label.category, label.priority, label.confirmedAt]);
-    });
-    const csv = rows.map((row) => row.map((cell) => `"${cell.replaceAll('"', '""')}"`).join(",")).join("\r\n");
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "meiruzo-confirmed-labels.csv";
-    document.body.append(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
-    notify(`Exported ${labelled.length} confirmed ${labelled.length === 1 ? "label" : "labels"}.`);
+  async function exportLabels() {
+    if (exporting || syncRunning) return;
+    setExporting(true);
+    try {
+      const { csv, count } = await confirmedLabelsCsv(adapter);
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "meiruzo-confirmed-labels.csv";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      notify(`Exported ${count} confirmed ${count === 1 ? "label" : "labels"}.`);
+    } catch { notify("Labels could not be exported. No incomplete file was downloaded; try again."); }
+    finally { setExporting(false); }
   }
-
   function clearFilters() {
-    setPage("inbox");
-    setCategoryFilter("All");
-    setPriorityFilter("All");
-    setQuickFilter("all");
-    setSearch("");
+    setPage("inbox"); setCategoryFilter("All"); setPriorityFilter("All"); setQuickFilter("all"); setSearch(""); setOffset(0);
   }
-
-  function editSelection(email: Email) {
-    setSelectedId(email.id);
-    const label = labels[email.id];
-    setDraftCategory(label?.category ?? email.prediction?.category ?? "Other");
-    setDraftPriority(label?.priority ?? email.prediction?.priority ?? "Medium");
-    setMobileDetail(true);
-  }
-
+  function editSelection(email: EmailSummary) { setSelectedId(email.id); setMobileDetail(true); }
   const pageTitle = page === "models" ? "Model lab" : page === "review" ? "Needs review" : "Smart inbox";
-  const totalUnclassified = stats.find((stat) => stat.category === "Unclassified")?.count ?? 0;
+  const totalUnclassified = stats?.categories.find((stat) => stat.category === "Unclassified")?.count ?? 0;
 
   return (
     <div className="app-shell">
@@ -253,8 +303,8 @@ function App({ adapter = fixtureAdapter }: { adapter?: InboxAdapter }) {
         </nav>
         <div className="side-spacer" />
         <div className="mailbox-card">
-          <div className="mailbox-card-head"><span className="status-dot" /><span className="mailbox-card-copy">Sample mailbox</span></div>
-          <p className="mailbox-card-copy">Preview data only. No account connected.</p>
+          <div className="mailbox-card-head"><span className="status-dot" /><span className="mailbox-card-copy">{syncStatus?.demo ? "Demo mailbox" : "Local mailbox"}</span></div>
+          <p className="mailbox-card-copy">{syncStatus?.demo ? "Synthetic data only." : syncStatus?.available ? "Read-only IMAP sync available." : "Configure IMAP in the backend."}</p>
           <button className="mailbox-card-copy" type="button" onClick={() => setDialogOpen(true)}>Set up mailbox</button>
         </div>
       </aside>
@@ -262,63 +312,66 @@ function App({ adapter = fixtureAdapter }: { adapter?: InboxAdapter }) {
       <div className="main-shell">
         <header className="topbar">
           <div className="breadcrumbs" aria-label="Breadcrumb"><span>Workspace</span><span aria-hidden="true">/</span><strong>{pageTitle}</strong></div>
-          <div className="top-actions"><span className="demo-badge">Demo data</span><button className="avatar" type="button" aria-label="Demo account, Rowan Kim" title="Demo account">RK</button></div>
+          <div className="top-actions"><span className="demo-badge">{syncStatus?.demo ? "Demo data" : "Local data"}</span><span className="avatar" aria-label="Local workspace">L</span></div>
         </header>
 
         <main className="app-main">
+          {countsError && <div className="state-message error-message" role="alert"><p>{countsError}</p><button type="button" className="text-button" onClick={refreshInbox}>Retry counts</button></div>}
           {page === "models" ? (
-            <ModelLab confirmedCount={confirmedCount} onReview={() => { setPage("inbox"); setFilter("all"); }} onExport={exportLabels} />
+            <ModelLab demo={syncStatus?.demo ?? false} exportDisabled={exporting || syncRunning} confirmedCount={confirmedCount} onReview={() => { setPage("inbox"); setFilter("all"); }} onExport={exportLabels} />
           ) : (
             <section className="view" aria-labelledby="inbox-title">
               <header className="page-heading">
                 <div className="page-heading-copy"><p className="eyebrow">Your mailbox, in focus</p><h1 id="inbox-title">{pageTitle}</h1><p>Find the messages that matter, then teach Meiruzo what matters to you.</p></div>
                 <div className="page-actions">
-                  <button className="btn btn-secondary" type="button" onClick={() => setDialogOpen(true)}><Icon name="plus" />Connect mailbox</button>
-                  <button className="btn btn-primary" type="button" onClick={syncInbox} disabled={syncing}><Icon name="sync" />{syncing ? "Syncing…" : "Sync sample"}</button>
+                  <button className="btn btn-secondary" type="button" onClick={() => setDialogOpen(true)}><Icon name="plus" />Mailbox setup</button>
+                  <label className="filter-select"><span>Sync</span><select aria-label="Sync messages" value={syncMode} disabled={syncRunning} onChange={(event) => setSyncMode(event.target.value as "recent" | "unread")}><option value="recent">Recent</option><option value="unread">Unread</option></select></label><button className="btn btn-primary" type="button" onClick={syncInbox} disabled={syncRunning || !syncStatus?.available}><Icon name="sync" />{syncRunning ? "Syncing…" : syncStatus?.demo ? "Sync demo" : "Sync inbox"}</button>
                 </div>
               </header>
 
               <div className="workspace-note" role="status">
-                <span><strong>Sample mailbox</strong> <span>— {syncMessage}</span></span>
-                {syncError ? <button className="text-button" type="button" onClick={syncInbox}>Try again</button> : <button className="text-button" type="button" onClick={() => setDialogOpen(true)}>Set up a mailbox</button>}
+                <span><strong>{syncStatus?.demo ? "Demo mailbox" : "Local mailbox"}</strong> <span>— {syncMessage}</span></span>
+                {syncError ? <button className="text-button" type="button" onClick={() => setSyncCheck((value) => value + 1)}>Check sync status</button> : <button className="text-button" type="button" onClick={() => setDialogOpen(true)}>Set up a mailbox</button>}
               </div>
 
-              {loadError && <div className="state-message error-message" role="alert"><strong>Inbox unavailable</strong><p>{loadError}</p><button className="text-button" type="button" onClick={() => window.location.reload()}>Reload inbox</button></div>}
-              {syncError && <div className="state-message error-message" role="alert"><strong>Sync failed</strong><p>{syncError}</p></div>}
+              {loadError && <div className="state-message error-message" role="alert"><strong>Inbox unavailable</strong><p>{loadError}</p><button className="text-button" type="button" onClick={refreshInbox}>Retry inbox</button></div>}
+              {(syncError || outcomeError || (syncRequestError && syncStatus?.state !== "running")) && <div className="state-message error-message" role="alert"><strong>Sync needs attention</strong><p>{syncError || outcomeError || syncRequestError}</p></div>}
 
               <div className="inline-stats" aria-label="Inbox counts">
-                <div className="inline-stat"><strong>{emails.length}</strong><span>messages</span></div>
+                <div className="inline-stat"><strong>{globalTotal ?? "—"}</strong><span>messages</span></div>
                 <div className="inline-stat"><strong>{allReview}</strong><span>needs review</span></div>
-                <div className="inline-stat"><strong>{confirmedCount}</strong><span>labels confirmed</span></div>
+                <div className="inline-stat"><strong>{confirmedCount ?? "—"}</strong><span>labels confirmed</span></div>
               </div>
 
               <section className="panel overview-panel" aria-labelledby="overview-title">
                 <div className="panel-head"><div className="panel-head-copy"><h2 id="overview-title">Inbox map</h2><p>All stored messages by category; tile area reflects count.</p></div></div>
-                <div className="map-meta"><span>Full sample mailbox · independent of inbox filters</span><span>{emails.length} {emails.length === 1 ? "message" : "messages"}{totalUnclassified ? ` · ${totalUnclassified} unclassified` : ""}</span></div>
+                <div className="map-meta"><span>All stored messages · independent of inbox filters</span><span>{globalTotal ?? "—"} {globalTotal === 1 ? "message" : "messages"}{globalTotal !== null && totalUnclassified ? ` · ${totalUnclassified} unclassified` : ""}</span></div>
                 <div className="map-root" id="treemap" role="group" aria-label="Category treemap for all stored messages">
-                  {loading || loadingStats ? <div className="map-empty" role="status">Loading category counts…</div> : loadError || statsError ? <div className="map-empty" role="status">{statsError || "Category counts are unavailable."}</div> : tree ? <TreemapBranch node={tree} selected={categoryFilter} onSelect={selectCategory} /> : <div className="map-empty">No messages yet. Sync to load the local inbox.</div>}
+                  {loadingStats ? <div className="map-empty" role="status">Loading category counts…</div> : statsError ? <div className="map-empty" role="status">{statsError || "Category counts are unavailable."}</div> : tree ? <TreemapBranch node={tree} selected={categoryFilter} onSelect={selectCategory} /> : <div className="map-empty">No messages yet. Sync to load the local inbox.</div>}
                 </div>
+                {statsError && <button type="button" className="text-button" onClick={refreshInbox}>Retry category counts</button>}
                 <div className="category-list" aria-label="Category counts">
-                  {stats.map(({ category, count, percentage }) => <button className="category-count" key={category} type="button" aria-pressed={categoryFilter === category} onClick={() => selectCategory(category)}>
+                  {(!loadingStats && !statsError ? stats?.categories ?? [] : []).map(({ category, count, percentage }) => <button className="category-count" key={category} type="button" aria-pressed={categoryFilter === category} onClick={() => selectCategory(category)}>
                     <span className="category-swatch" style={{ background: categoryColors[category] }} aria-hidden="true" /><span className="category-name">{category}</span><strong>{count}</strong><span className="category-percent">{percentage}%</span>
                   </button>)}
                 </div>
               </section>
 
               <section className="inbox-section" aria-labelledby="messages-title">
-                <div className="section-bar"><div className="section-title"><h2 id="messages-title">Messages</h2><p id="result-count" aria-live="polite">{loading ? "Loading messages…" : `${visibleEmails.length} ${visibleEmails.length === 1 ? "message" : "messages"}`}</p></div>
+                <div className="section-bar"><div className="section-title"><h2 id="messages-title">Messages</h2><p id="result-count" aria-live="polite">{loading ? "Loading messages…" : loadError ? "Results unavailable" : `${matchedTotal} ${matchedTotal === 1 ? "message" : "messages"}`}</p></div>
                   <div className="inbox-tools">
-                    <label className="search-control" htmlFor="search-input"><span>Search messages</span><input id="search-input" type="search" autoComplete="off" placeholder="Sender, subject, or body" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
-                    <button className="btn btn-secondary export-button" id="export-labels" type="button" onClick={exportLabels} aria-label="Export confirmed labels as CSV"><Icon name="download" />Export labels</button>
+                    <label className="search-control" htmlFor="search-input"><span>Search messages</span><input id="search-input" type="search" autoComplete="off" placeholder="Sender, subject, or body" value={search} maxLength={200} onChange={(event) => { setSearch(event.target.value); setOffset(0); }} /></label>
+                    <button className="btn btn-secondary" type="button" onClick={refreshInbox} disabled={loading}>Refresh inbox</button>
+                    <button className="btn btn-secondary export-button" id="export-labels" type="button" onClick={exportLabels} disabled={exporting || syncRunning} aria-label="Export confirmed labels as CSV"><Icon name="download" />Export labels</button>
                   </div>
                 </div>
 
                 <div className="filter-row" role="group" aria-label="Filter messages">
-                  <button className="filter-button" type="button" aria-pressed={quickFilter === "all"} onClick={() => setFilter("all")}>All messages <span className="filter-count">{emails.length}</span></button>
+                  <button className="filter-button" type="button" aria-pressed={quickFilter === "all"} onClick={() => setFilter("all")}>All messages <span className="filter-count">{globalTotal ?? "—"}</span></button>
                   <button className="filter-button" type="button" aria-pressed={quickFilter === "review"} onClick={() => setFilter("review")}>Needs review <span className="filter-count">{allReview}</span></button>
                   <button className="filter-button" type="button" aria-pressed={quickFilter === "high"} onClick={() => setFilter("high")}>High priority</button>
-                  <label className="filter-select"><span>Category</span><select aria-label="Filter by category" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value as CategoryFilter | "All")}><option value="All">All categories</option>{categories.map((category) => <option key={category}>{category}</option>)}<option>Unclassified</option></select></label>
-                  <label className="filter-select"><span>Priority</span><select aria-label="Filter by priority" value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value as Priority | "All")}><option value="All">All priorities</option>{priorities.map((priority) => <option key={priority}>{priority}</option>)}</select></label>
+                  <label className="filter-select"><span>Category</span><select aria-label="Filter by category" value={categoryFilter} onChange={(event) => { setCategoryFilter(event.target.value as CategoryFilter); setOffset(0); }}><option value="All">All categories</option>{categories.map((category) => <option key={category}>{category}</option>)}<option>Unclassified</option></select></label>
+                  <label className="filter-select"><span>Priority</span><select aria-label="Filter by priority" value={priorityFilter} onChange={(event) => { setPriorityFilter(event.target.value as Priority | "All"); if (quickFilter === "high") setQuickFilter("all"); setOffset(0); }}><option value="All">All priorities</option>{priorities.map((priority) => <option key={priority}>{priority}</option>)}</select></label>
                   {(categoryFilter !== "All" || priorityFilter !== "All" || quickFilter !== "all" || search) && <button type="button" className="text-button clear-filters" onClick={clearFilters}>Clear filters</button>}
                 </div>
 
@@ -326,11 +379,12 @@ function App({ adapter = fixtureAdapter }: { adapter?: InboxAdapter }) {
                   <section className="panel list-panel" aria-label="Email message list">
                     <div className="list-head"><span>{page === "review" ? "Needs review" : "Inbox"}</span><span>Model signal</span></div>
                     <div className="email-list" aria-label="Messages">
-                      {loading ? <div className="empty-list" role="status">Loading messages…</div> : !visibleEmails.length ? <div className="empty-list"><h3>{emails.length ? "No messages here" : "Your inbox is empty"}</h3><p>{emails.length ? "Try another filter or search to return to the inbox." : "Sync when you are ready to add local messages."}</p><button type="button" onClick={clearFilters}>Clear filters</button></div> : visibleEmails.map((email) => <EmailRow key={email.id} email={email} labels={labels} selected={email.id === selectedId} onClick={() => editSelection(email)} />)}
+                      {loading ? <div className="empty-list" role="status">Loading messages…</div> : loadError ? <div className="empty-list">Messages are unavailable. Retry loading the inbox.</div> : !emails.length ? <div className="empty-list"><h3>{globalTotal !== 0 && (search || categoryFilter !== "All" || priorityFilter !== "All" || quickFilter !== "all") ? "No messages here" : "Your inbox is empty"}</h3><p>Sync to add messages, or clear filters to return to the inbox.</p><button type="button" onClick={clearFilters}>Clear filters</button></div> : emails.map((email) => <EmailRow key={email.id} email={email} selected={email.id === selectedId} onClick={() => editSelection(email)} />)}
                     </div>
+                    <nav className="pagination" aria-label="Inbox pagination"><button type="button" className="btn btn-secondary" disabled={loading || Boolean(loadError) || offset === 0} onClick={() => { setOffset((value) => Math.max(0, value - 50)); setMobileDetail(false); }}>Previous</button><span aria-live="polite">{loadError ? "Page unavailable" : matchedTotal ? `${offset + 1}–${Math.min(offset + 50, matchedTotal)} of ${matchedTotal}` : "0 messages"}</span><button type="button" className="btn btn-secondary" disabled={loading || Boolean(loadError) || offset + 50 >= matchedTotal} onClick={() => { setOffset((value) => value + 50); setMobileDetail(false); }}>Next</button></nav>
                   </section>
                   <article className="panel detail-panel" id="email-detail" aria-label="Selected email">
-                    {selectedEmail ? <EmailDetail email={selectedEmail} label={labels[selectedEmail.id]} draftCategory={draftCategory} draftPriority={draftPriority} saving={saving} onCategory={setDraftCategory} onPriority={setDraftPriority} onSave={saveLabels} onBack={() => setMobileDetail(false)} /> : <div className="no-selection"><h3>No message selected</h3><p>Clear a filter or search for another message to continue reviewing your inbox.</p></div>}
+                    {loadingDetail ? <div className="no-selection" role="status">Loading message…</div> : detailError ? <div className="no-selection" role="alert"><p>{detailError}</p><button type="button" onClick={refreshInbox}>Retry message</button><button type="button" onClick={() => setMobileDetail(false)}>Back to messages</button></div> : selectedEmail ? <EmailDetail email={selectedEmail} label={label} draftCategory={draft.category} draftPriority={draft.priority} saving={saving} hasChanges={hasChanges} saveError={saveError} onCategory={(value) => editDraft("category", value)} onPriority={(value) => editDraft("priority", value)} onSave={saveLabels} onBack={() => setMobileDetail(false)} /> : <div className="no-selection"><h3>No message selected</h3><p>Clear a filter or search for another message to continue reviewing your inbox.</p><button type="button" onClick={() => setMobileDetail(false)}>Back to messages</button></div>}
                   </article>
                 </div>
               </section>
@@ -342,9 +396,9 @@ function App({ adapter = fixtureAdapter }: { adapter?: InboxAdapter }) {
       <dialog ref={dialogRef} id="connect-dialog" aria-labelledby="connect-title" onClose={() => setDialogOpen(false)}>
         <div className="dialog-content">
           <div className="dialog-head"><div className="dialog-head-copy"><p className="eyebrow">Mailbox setup</p><h2 id="connect-title">Connect your inbox</h2></div><button className="dialog-close" type="button" aria-label="Close mailbox setup" onClick={() => setDialogOpen(false)}><Icon name="close" /></button></div>
-          <p className="dialog-body">Meiruzo connects through IMAP and keeps message review available when a model is uncertain. This clickable preview uses sample messages and does not connect to a mail server.</p>
-          <div className="secure-note"><Icon name="lock" /><span>This preview never asks for a mailbox password. In the product, IMAP credentials must be handled by the secure service.</span></div>
-          <div className="dialog-actions"><button className="btn btn-secondary" type="button" onClick={() => setDialogOpen(false)}>Cancel</button><button className="btn btn-primary" type="button" onClick={() => { setSyncMessage("example messages only; no mail server connected."); setDialogOpen(false); notify("Demo mailbox is ready."); }}>Continue with demo</button></div>
+          <p className="dialog-body">Configure your IMAP account in the backend’s private environment file, then restart the backend and sync recent or unread messages. Sync retrieves up to 50 messages without changing your mailbox. Use the local setup instructions in the project README.</p>
+          <div className="secure-note"><Icon name="lock" /><span>Passwords stay in the backend environment. This page never asks for or stores mailbox credentials.</span></div>
+          <div className="dialog-actions"><button className="btn btn-primary" type="button" onClick={() => { setDialogOpen(false); setSyncCheck((value) => value + 1); }}>Check configuration</button></div>
         </div>
       </dialog>
       <div className={`toast ${toast ? "visible" : ""}`} role="status" aria-live="polite">{toast}</div>
@@ -352,46 +406,46 @@ function App({ adapter = fixtureAdapter }: { adapter?: InboxAdapter }) {
   );
 }
 
-function NavButton({ icon, label, count, current, onClick }: { icon: "mail" | "review" | "model"; label: string; count?: number; current: boolean; onClick: () => void }) {
+function NavButton({ icon, label, count, current, onClick }: { icon: "mail" | "review" | "model"; label: string; count?: number | string; current: boolean; onClick: () => void }) {
   return <button className="nav-link" type="button" aria-label={label} aria-current={current ? "page" : undefined} onClick={onClick}><Icon name={icon} /><span>{label}</span>{count !== undefined && <span className="nav-count">{count}</span>}</button>;
 }
 
-function EmailRow({ email, labels, selected, onClick }: { email: Email; labels: LabelsById; selected: boolean; onClick: () => void }) {
-  const category = categoryOf(email, labels);
-  const priority = priorityOf(email, labels);
-  const review = isNeedsReview(email, labels);
+function EmailRow({ email, selected, onClick }: { email: EmailSummary; selected: boolean; onClick: () => void }) {
+  const category = categoryOf(email);
+  const priority = priorityOf(email);
+  const review = email.needsReview;
   return <button className={`email-row ${email.read ? "read" : "unread"}`} type="button" aria-current={selected ? "true" : "false"} aria-label={`${email.sender}, ${email.subject}, ${category}, ${priority ?? "priority unavailable"}${review ? ", needs review" : ""}`} onClick={onClick}>
     <span className="email-row-top"><span className="email-sender">{email.sender}</span><span className="email-time">{email.received}</span></span>
     <span className="email-subject">{email.subject}</span>
-    <span className="email-snippet">{email.body.replace(/\s+/g, " ").trim()}</span>
-    <span className="email-row-bottom"><span className="tag">{category}</span>{priority && <span className={`tag priority-tag ${priority.toLowerCase()}`}>{priority}</span>}{review && <span className="review-status">Needs review</span>}{email.hasAttachments && <span className="attachment-status">Attachment</span>}{!email.read && <span className="unread-status">Unread</span>}<span className="confidence">{email.prediction?.confidence === undefined ? "No prediction" : `Demo ${email.prediction.confidence}%`}</span></span>
+    <span className="email-row-bottom"><span className="tag">{category}</span>{priority && <span className={`tag priority-tag ${priority.toLowerCase()}`}>{priority}</span>}{review && <span className="review-status">Needs review</span>}{email.hasAttachments && <span className="attachment-status">Attachment</span>}{!email.read && <span className="unread-status">Unread</span>}<span className="confidence">{email.prediction?.confidence == null ? "No prediction" : `${email.prediction.confidence}%`}</span></span>
   </button>;
 }
 
-function EmailDetail({ email, label, draftCategory, draftPriority, saving, onCategory, onPriority, onSave, onBack }: { email: Email; label?: HumanLabel; draftCategory: Category; draftPriority: Priority; saving: boolean; onCategory: (category: Category) => void; onPriority: (priority: Priority) => void; onSave: () => void; onBack: () => void }) {
+function EmailDetail({ email, label, draftCategory, draftPriority, saving, hasChanges, saveError, onCategory, onPriority, onSave, onBack }: { email: StoredEmail; label: HumanLabel | null; draftCategory: Category | ""; draftPriority: Priority | ""; saving: boolean; hasChanges: boolean; saveError: string; onCategory: (category: Category | "") => void; onPriority: (priority: Priority | "") => void; onSave: () => void; onBack: () => void }) {
   const prediction = email.prediction;
   return <>
-    <div className="detail-top"><div className="detail-top-copy"><button className="back-to-list" type="button" onClick={onBack}>← Back to messages</button><h2>{email.subject}</h2><p className="detail-sender">{email.sender} &lt;{email.address}&gt;</p><span className="detail-time">{email.received} · Demo message</span></div></div>
+    <div className="detail-top"><div className="detail-top-copy"><button className="back-to-list" type="button" onClick={onBack}>← Back to messages</button><h2>{email.subject}</h2><p className="detail-sender">{email.sender} &lt;{email.address}&gt;</p><span className="detail-time">{email.received} · Stored locally</span></div></div>
     <div className="detail-body"><p>{email.body}</p><div className="message-flags"><span>{email.read ? "Read" : "Unread"}</span><span>{email.hasAttachments ? "Has attachment" : "No attachments"}</span></div></div>
-    <section className="prediction-block" aria-label="Original demo prediction"><div className="prediction-head"><strong>Original prediction</strong><span className="demo-label">{prediction ? "Demo estimate" : "Not available"}</span></div>
-      {prediction ? <><div className="prediction-values"><span className="tag">{prediction.category ?? "Category unavailable"}</span><span className="tag priority-tag">{prediction.priority ?? "Priority unavailable"} priority</span><span className="tag">{prediction.confidence === undefined ? "Confidence unavailable" : `Category confidence ${prediction.confidence}%`}</span></div><p className="prediction-explanation">{prediction.reasonCategory ?? "This is synthetic demo data; no model is connected."}</p></> : <p className="prediction-explanation">No model prediction is available for this message yet.</p>}
+    <section className="prediction-block" aria-label="Original prediction"><div className="prediction-head"><strong>Original prediction</strong><span className="demo-label">{prediction ? "Stored prediction" : "Not available"}</span></div>
+      {prediction ? <><div className="prediction-values"><span className="tag">{prediction.category ?? "Category unavailable"}</span><span className="tag priority-tag">{prediction.priority ?? "Priority unavailable"} priority</span><span className="tag">{prediction.confidence == null ? "Confidence unavailable" : `Category confidence ${prediction.confidence}%`}</span></div><p className="prediction-explanation">{prediction.reasonCategory ?? "No prediction explanation is available."}</p></> : <p className="prediction-explanation">No model prediction is available for this message yet.</p>}
     </section>
     <section className="edit-block" aria-labelledby="edit-labels-title"><div className="edit-heading"><strong id="edit-labels-title">Your confirmed labels</strong><span>{label ? "Human label · saved on this device" : "Separate from prediction"}</span></div>
-      <div className="edit-fields"><div className="field"><label htmlFor="edit-category">Category</label><select id="edit-category" value={draftCategory} onChange={(event) => onCategory(event.target.value as Category)}>{categories.map((category) => <option key={category}>{category}</option>)}</select></div><div className="field"><label htmlFor="edit-priority">Priority</label><select id="edit-priority" value={draftPriority} onChange={(event) => onPriority(event.target.value as Priority)}>{priorities.map((priority) => <option key={priority}>{priority}</option>)}</select></div></div>
-      <div className="edit-actions"><p className="edit-note">Confirm or change either label. Original predictions remain available for comparison.</p><button className="btn btn-primary save-button" type="button" onClick={onSave} disabled={saving}>{saving ? "Saving…" : label ? "Update labels" : "Confirm labels"}</button></div>
+      <div className="edit-fields"><div className="field"><label htmlFor="edit-category">Category</label><select id="edit-category" value={draftCategory} disabled={saving} onChange={(event) => onCategory(event.target.value as Category | "")}><option value="" disabled={Boolean(label?.category)}>Not labeled</option>{categories.map((category) => <option key={category}>{category}</option>)}</select></div><div className="field"><label htmlFor="edit-priority">Priority</label><select id="edit-priority" value={draftPriority} disabled={saving} onChange={(event) => onPriority(event.target.value as Priority | "")}><option value="" disabled={Boolean(label?.priority)}>Not labeled</option>{priorities.map((priority) => <option key={priority}>{priority}</option>)}</select></div></div>
+      {saveError && <p className="save-error" role="alert">{saveError}</p>}
+      <div className="edit-actions"><p className="edit-note">Confirm or change either label. Original predictions remain available for comparison.</p><button className="btn btn-primary save-button" type="button" onClick={onSave} disabled={saving || !hasChanges}>{saving ? "Saving…" : label ? "Update labels" : "Confirm labels"}</button></div>
     </section>
   </>;
 }
 
-function ModelLab({ confirmedCount, onReview, onExport }: { confirmedCount: number; onReview: () => void; onExport: () => void }) {
+function ModelLab({ confirmedCount, demo, exportDisabled, onReview, onExport }: { confirmedCount: number | null; demo: boolean; exportDisabled: boolean; onReview: () => void; onExport: () => void }) {
   const abbreviations = ["Rec", "Lnk", "Per", "Txn", "Nws", "Pro", "Spm", "Oth"];
   return <section className="view" aria-labelledby="models-title">
     <header className="page-heading"><div className="page-heading-copy model-intro"><p className="eyebrow">Explainable baseline</p><h1 id="models-title">Model lab</h1><p>Keep every model version accountable before it classifies new mail.</p></div></header>
-    <section className="model-status" aria-labelledby="model-status-title"><div className="model-status-copy"><div className="model-status-icon"><Icon name="model" /></div><div><h2 id="model-status-title">No evaluated model is active</h2><p>This demo shows sample predictions only. A saved model becomes eligible for new mail after a held-out evaluation is recorded.</p><div className="model-count"><strong>{confirmedCount}</strong><span>confirmed labels available for export</span></div></div></div><div className="model-status-actions"><button className="btn btn-secondary" type="button" onClick={onReview}>Review labels</button><button className="btn btn-primary" type="button" onClick={onExport}>Export confirmed labels</button></div></section>
+    <section className="model-status" aria-labelledby="model-status-title"><div className="model-status-copy"><div className="model-status-icon"><Icon name="model" /></div><div><h2 id="model-status-title">No evaluated model is active</h2><p>Training and model activation are planned for later milestones. Human category labels are available to local training; priority-only labels are retained separately.</p><div className="model-count"><strong>{confirmedCount ?? "—"}</strong><span>confirmed labels available for export</span></div></div></div><div className="model-status-actions"><button className="btn btn-secondary" type="button" onClick={onReview}>Review labels</button><button className="btn btn-primary" type="button" onClick={onExport} disabled={exportDisabled}>Export confirmed labels</button></div></section>
     <div className="model-grid"><section className="panel model-panel" aria-labelledby="metrics-title"><div className="model-panel-head"><h2 id="metrics-title">Held-out evaluation</h2><p>Report per-class precision, recall, and F1 before a model is used.</p></div><div className="macro-card"><span>Macro F1</span><strong aria-label="Not available">—</strong></div><table className="metrics-table"><caption className="sr-only">Per-class evaluation metrics are unavailable until a held-out run exists.</caption><thead><tr><th>Category</th><th>Precision</th><th>Recall</th><th>F1</th></tr></thead><tbody>{categories.map((category) => <tr key={category}><th scope="row">{category}</th><td>—</td><td>—</td><td>—</td></tr>)}</tbody></table><p className="table-note">No held-out run yet. Values appear after training and evaluation on labeled data.</p></section>
       <section className="panel model-panel" aria-labelledby="matrix-title"><div className="model-panel-head"><h2 id="matrix-title">Confusion matrix</h2><p>Actual labels by predicted labels.</p></div><p className="matrix-note">No evaluation has been run. Empty cells stay blank instead of implying zero errors.</p><div className="matrix-wrap"><table className="matrix-table"><caption className="sr-only">Confusion matrix has no values because no held-out evaluation exists.</caption><thead><tr><th>Actual / Pred.</th>{abbreviations.map((item, index) => <th key={item} title={categories[index]}>{item}</th>)}</tr></thead><tbody>{categories.map((category) => <tr key={category}><th scope="row" title={category}>{category}</th>{abbreviations.map((item) => <td key={item}>—</td>)}</tr>)}</tbody></table></div></section></div>
-    <section className="workflow-steps" aria-label="Training workflow"><article className="workflow-step"><span className="step-index">1</span><strong>Build the label set</strong><p>Review sample messages; confirmed corrections stay separate from original predictions.</p></article><article className="workflow-step"><span className="step-index">2</span><strong>Evaluate offline</strong><p>Hold out examples and review per-category performance before activation.</p></article><article className="workflow-step"><span className="step-index">3</span><strong>Activate with care</strong><p>Use a model only after its evaluation and artifact have been saved locally.</p></article></section>
-    <p className="threshold-note">Sample predictions are illustrative. Email content and labels remain in this browser preview; no remote model is used.</p>
+    <section className="workflow-steps" aria-label="Training workflow"><article className="workflow-step"><span className="step-index">1</span><strong>Build the label set</strong><p>Review stored messages; confirmed corrections stay separate from original predictions.</p></article><article className="workflow-step"><span className="step-index">2</span><strong>Evaluate offline</strong><p>Hold out examples and review per-category performance before activation.</p></article><article className="workflow-step"><span className="step-index">3</span><strong>Activate with care</strong><p>Use a model only after its evaluation and artifact have been saved locally.</p></article></section>
+    <p className="threshold-note">{demo ? "Demo predictions are illustrative. " : ""}Email content and labels stay local; no remote model is used.</p>
   </section>;
 }
 

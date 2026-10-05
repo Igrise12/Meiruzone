@@ -64,6 +64,7 @@ class EmailQuery(WireModel):
     category: CategoryFilter | None = None
     priority: Priority | None = None
     needs_review: bool = False
+    has_human_label: bool = False
     limit: int = Field(default=50, ge=1, le=100)
     offset: int = Field(default=0, ge=0, le=1_000_000)
 

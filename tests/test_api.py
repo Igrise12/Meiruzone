@@ -183,6 +183,41 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(counts["Unclassified"], 1)
         self.assertEqual(counts["Spam"], 2)
 
+    def test_human_label_filter_counts_partial_labels_and_combines_with_filters(self):
+        initial = self.client.get("/api/v1/emails?hasHumanLabel=true&limit=1").json()
+        self.assertEqual(initial["total"], 1)
+        self.save("demo-01", priority="Low")
+        self.save("demo-09", category="Spam")
+        page = self.client.get("/api/v1/emails?hasHumanLabel=true&limit=1&offset=1").json()
+        self.assertEqual(page["total"], 3)
+        self.assertEqual(len(page["items"]), 1)
+        review = self.client.get("/api/v1/emails?hasHumanLabel=true&needsReview=true").json()
+        self.assertEqual([item["id"] for item in review["items"]], ["demo-01"])
+        spam = self.client.get("/api/v1/emails?hasHumanLabel=true&category=Spam").json()
+        self.assertEqual([item["id"] for item in spam["items"]], ["demo-09"])
+        self.assertEqual(self.client.get("/api/v1/emails?hasHumanLabel=false").json()["total"], 10)
+        invalid = self.client.get("/api/v1/emails?hasHumanLabel=private-filter-value")
+        self.assertEqual(invalid.status_code, 422)
+        self.assertEqual(invalid.json()["error"]["fields"][0]["field"], "query.hasHumanLabel")
+        self.assertNotIn("private-filter-value", invalid.text)
+
+    def test_training_reader_uses_only_human_category_ground_truth_across_restart(self):
+        self.save("demo-01", category="Spam", source="correction")
+        self.save("demo-09", priority="High")
+        repository = self.app.state.inbox.repository
+        examples = repository.category_training_examples()
+        self.assertEqual([row["id"] for row in examples], ["demo-01", "demo-08"])
+        self.assertEqual(examples[0]["category"], "Spam")
+        self.assertIsNone(examples[0]["priority"])
+        self.assertEqual(examples[0]["source"], "correction")
+        self.assertEqual(set(examples[0]), {
+            "id", "sender", "address", "subject", "body", "category", "priority", "confirmed_at", "source",
+        })
+        self.assertIn("synthetic", examples[0]["body"])
+        with TestClient(create_app(self.settings), base_url="http://localhost") as client:
+            self.assertEqual(client.app.state.inbox.repository.category_training_examples(), examples)
+            self.assertEqual(client.get("/api/v1/emails/demo-01").json()["prediction"]["category"], "Recruitment")
+
     def test_unknown_ids_and_invalid_inputs(self):
         self.assertEqual(self.client.get("/api/v1/emails/missing").status_code, 404)
         self.assertEqual(self.save("missing", category="Other").status_code, 404)

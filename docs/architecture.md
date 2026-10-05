@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document describes the MVP architecture for the local-first smart email classifier. Tasks 1–3 are implemented: the React fixture preview, FastAPI/SQLite foundation, and safe IMAP ingestion. Frontend API integration and ML workflows below remain design targets.
+This document describes the MVP architecture for the local-first smart email classifier. Tasks 1–4 are implemented: the React Smart Inbox/API integration, FastAPI/SQLite foundation, safe IMAP ingestion, persistent human labels, and the local category training-data reader. ML workflows below remain design targets.
 
 The MVP retrieves mail over IMAP, stores the minimum useful data locally, supports manual labels, trains and evaluates a traditional ML category model, assigns a basic priority, and presents the results in a React Smart Inbox backed by a FastAPI service. It does not send mail or modify the mailbox.
 
@@ -87,7 +87,7 @@ The conceptual data model is:
 | Mailbox / IMAP identity | Repeatable scoped upserts | Account scope, folder, expected UIDVALIDITY, UID, local email ID, optional Message-ID |
 | Sync state | Bounded retrieval bookkeeping | Running/last outcome, timestamps, imported/processed/total/skipped, sanitized error code |
 
-Human labels store independently optional category and priority plus a server timestamp and manual/correction source, without feedback history. Partial label updates preserve omitted fields and never update predictions. Ingestion upserts only message fields and identity, preserving both labels and predictions. Each message, identity mapping, and progress update commit atomically. Skips/failures retain previous imports for safe retry. Local mail is retained until explicit local deletion; database/backup permissions, SQLite backup, restore, and deletion procedures are in the [setup guide](../README.md#local-data-retention-backup-and-deletion).
+Human labels store independently optional category and priority plus a server timestamp and manual/correction source, without feedback history. Partial label updates preserve omitted fields and never update predictions. The frontend saves only newly confirmed or changed fields, keeps unsaved drafts during failures/refreshes, and reads the server Needs Review flag. Unconfirmed choices are blank instead of default ground truth. `Repository.category_training_examples()` joins messages with human categories only; unverified predictions and priority-only labels are excluded. Ingestion upserts only message fields and identity, preserving both labels and predictions. Each message, identity mapping, and progress update commit atomically. Skips/failures retain previous imports for safe retry. Local mail is retained until explicit local deletion; database/backup permissions, SQLite backup, restore, and deletion procedures are in the [setup guide](../README.md#local-data-retention-backup-and-deletion).
 
 ### Classification and training
 
@@ -140,7 +140,7 @@ app/
 ├── imap.py       # Verified TLS, read-only selection, selective bounded fetches
 ├── parser.py     # Header decoding, normalized records, safe HTML-to-text
 └── demo.py       # Synthetic seed records
-frontend/         # React fixture preview; API integration is task 4
+frontend/         # React Smart Inbox, HTTP/fixture adapters, and integration checks
 tests/            # Synthetic API/config/storage/IMAP/parser checks
 data/             # Ignored local databases
 models/           # Future ignored local model artifacts

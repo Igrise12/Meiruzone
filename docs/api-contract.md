@@ -3,8 +3,7 @@
 The backend runs at `http://127.0.0.1:8000`. `GET /openapi.json` exposes the
 executable schemas. Interactive documentation is disabled to avoid loading
 external assets. Application endpoints use `/api/v1` and return JSON.
-SQLite persistence and safe IMAP retrieval are implemented; frontend integration
-remains task 4.
+SQLite persistence, safe IMAP retrieval, and the frontend integration are implemented.
 
 ## Shared values
 
@@ -41,11 +40,14 @@ remains task 4.
 | `category` | No filter | A category or Unclassified |
 | `priority` | No filter | High, Medium, Low |
 | `needsReview` | `false` | Boolean; true selects review items, false applies no review restriction |
+| `hasHumanLabel` | `false` | Boolean; true selects any human label, including category-only or priority-only; false applies no label restriction |
 | `limit` | 50 | Integer, 1–100 |
 | `offset` | 0 | Integer, 0–1,000,000 |
 
 Omit category/priority to select all; do not send the frontend's `All` value.
-Unknown query fields are rejected. Search includes sender, address, subject,
+Unknown query fields are rejected. `hasHumanLabel=true` combines with all other
+filters; its `total` supplies the global confirmed-label count when other filters
+are omitted. CSV review export pages over this filter independently of UI filters. Search includes sender, address, subject,
 plain-text body, effective category, and effective priority. `%`, `_`, and SQL
 syntax are literal text. Sort by receivedAt descending, then ID ascending.
 `total` counts matching messages before pagination. An offset beyond the
@@ -283,19 +285,35 @@ Non-validation errors have an empty fields array.
 | 500 | Sanitized unexpected failure / internal_error |
 | 503 | Sync unavailable or temporary storage failure |
 
-## Frontend adapter mapping for task 4
+## Frontend integration
 
-The fixture adapter remains the default. Browser labels are demo-only and
-are not automatically imported into SQLite.
+The frontend uses native fetch against the local API by default. An explicit
+`VITE_DATA_SOURCE=fixtures` keeps synthetic offline development/testing available.
+Fixture browser labels are not automatically imported into SQLite. API failures
+remain visible and recoverable without substituting demo data.
 
-- Replace bulk getEmails/client filtering with list queries, paging, and
-  detail fetching. Format receivedAt into the display-only received value.
-- Use each record's humanLabel instead of bulk getLabels. Extend the current
-  frontend label type to support partial labels and map explicit nulls.
-- PATCH changed fields and source; use the returned server timestamp and
-  label rather than browser-generated confirmedAt.
-- Map statistics.categories to existing chart rows and retain statistics.total.
-- Use server needsReview so the configured threshold is authoritative.
-- Read sync status, distinguish demo no-ops, and refresh inbox/aggregates after
-  future real imports. Retain failure/retry states.
-- Keep mailbox credentials out of frontend variables, storage, and logs.
+- List queries perform server-side search/filtering and 50-message pagination;
+  only selected details load bodies. UTC receivedAt values format locally.
+- Each record's humanLabel supports partial fields/nulls. Newly confirmed or
+  changed fields and source are PATCHed, using the returned server timestamp.
+  Failed-save drafts survive selection and data refreshes within the page session.
+- Effective category/priority resolve human values independently before
+  predictions. needsReview comes directly from the backend.
+- Treemap counts/percentages and total come from category-stats. Global review
+  and confirmed-label counters use unfiltered list totals with limit=1. Saves,
+  sync completion, and explicit refresh reload records and aggregates.
+- Sync offers recent/unread with limit 50, polls during running operations,
+  identifies demo no-ops, and displays persisted partial/failure outcomes.
+- CSV export pages over hasHumanLabel=true, keeps predicted and confirmed columns
+  separate, escapes spreadsheet formulas, and aborts incomplete downloads.
+- No credentials enter frontend settings/storage, API responses, or client logs.
+  Configurable API URLs must target loopback; writes use the documented marker.
+
+## Local category training data
+
+`Repository.category_training_examples()` reads the configured SQLite repository
+and returns dictionaries containing id, sender, address, subject, body, category,
+optional priority, confirmed_at, and source, ordered by ID. Only records with a
+non-null human category qualify. Predictions and priority-only labels never
+become category ground truth. This is a local Python interface, not an HTTP
+export or training operation. The existing schema needs no migration.

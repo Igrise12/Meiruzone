@@ -7,7 +7,7 @@
 
 This checklist changes the delivery order to **frontend first**, using the frontend handed over from **Open Design** as the design and implementation base. Build and review the frontend with synthetic data before connecting the backend. The product scope and local-first requirements in the referenced documents still apply.
 
-Tasks 1–3 are complete. Task 2 brought forward the initial SQLite storage foundation; task 3 adds safe IMAP ingestion and real sync bookkeeping. The remaining later milestones are pending. Mark a task complete only when its deliverable and relevant checks are complete.
+Tasks 1–4 are complete. Task 2 brought forward the initial SQLite storage foundation; task 3 adds safe IMAP ingestion and real sync bookkeeping. The remaining later milestones are pending. Mark a task complete only when its deliverable and relevant checks are complete.
 
 ## 1. Frontend first: receive and integrate the Open Design handover
 
@@ -89,17 +89,19 @@ Tasks 1–3 are complete. Task 2 brought forward the initial SQLite storage foun
 
 ## 4. Connect the frontend and build the labeled dataset
 
-- [ ] Replace synthetic data calls with the agreed API adapter and retain fixtures for development and automated tests.
-- [ ] Connect email lists/details, filters, pagination, sync status, and dashboard treemap aggregates to SQLite-backed endpoints.
-- [ ] Compute treemap counts from existing records without adding an analytics service; count each message once and refresh after sync, labels/corrections, and new predictions.
-- [ ] Persist manual category and priority labels and prediction corrections through validated API operations.
-- [ ] Show successful saves and recoverable failures accurately; preserve user changes while retrying a failed save.
-- [ ] Make labeled messages available to local training, with a clear distinction between human labels and unverified predictions.
-- [ ] Test frontend/backend integration for filtering, labeling, correcting, refresh/restart persistence, and API failures.
-- [ ] Test treemap totals and percentages against stored messages, including human-label precedence, Unclassified messages, unchanged totals across inbox pages/filters, and refreshed category counts after correction.
-- [ ] Recheck safe rendering using ingested message content and verify secret fields never appear in API responses.
+- [x] Replace synthetic data calls with the agreed API adapter and retain fixtures for development and automated tests.
+- [x] Connect email lists/details, filters, pagination, sync status, and dashboard treemap aggregates to SQLite-backed endpoints.
+- [x] Compute treemap counts from existing records without adding an analytics service; count each message once and refresh after sync, labels/corrections, and new predictions.
+- [x] Persist manual category and priority labels and prediction corrections through validated API operations.
+- [x] Show successful saves and recoverable failures accurately; preserve user changes while retrying a failed save.
+- [x] Make labeled messages available to local training, with a clear distinction between human labels and unverified predictions.
+- [x] Test frontend/backend integration for filtering, labeling, correcting, refresh/restart persistence, and API failures.
+- [x] Test treemap totals and percentages against stored messages, including human-label precedence, Unclassified messages, unchanged totals across inbox pages/filters, and refreshed category counts after correction.
+- [x] Recheck safe rendering using ingested message content and verify secret fields never appear in API responses.
 
 **Milestone complete when:** a user can review locally ingested messages, inspect accurate dashboard category counts, and create reliable training labels from the Smart Inbox.
+
+**Implementation and verification:** the frontend now defaults to a loopback-only HTTP adapter with explicit offline fixture mode. Server filters, 50-message pagination, selected details, authoritative Needs Review, partial labels, retained drafts, persisted sync outcomes/progress, and complete SQLite dashboard counts are connected. `hasHumanLabel` supports global label counts and paged review CSV export; formulas are escaped and incomplete downloads are refused. `Repository.category_training_examples()` exposes human category ground truth without predictions or priority-only examples, using the existing schema. All 52 backend tests, 29 frontend tests, the real HTTP integration check, frontend lint/type/build checks, `uv lock --check`, and `git diff --check` passed. The integration check uses mocked IMAP and temporary synthetic storage, including ingested markup, aggregate refresh, frontend reload/backend restart persistence, and forbidden origins. Desktop (1440 px) and mobile (390 px) layouts, category-only saves, failure recovery, and absence of horizontal overflow were checked in the browser. No personal mailbox was contacted; ML remains tasks 5–6.
 
 ## 5. Train and evaluate the category baseline
 

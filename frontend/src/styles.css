@@ -609,3 +609,7 @@
       .map-tile { padding: 6px 4px; }
       .map-label { font-size: 9px; }
     }
+
+.pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.pagination .btn { padding: 8px 12px; min-height: 36px; }
+.save-error { margin-top: 10px; color: #b91c1c; font-size: 12px; }

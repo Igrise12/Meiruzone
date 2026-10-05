@@ -15,14 +15,16 @@ export type Priority = (typeof priorities)[number];
 export type CategoryFilter = Category | "Unclassified" | "All";
 
 export type Prediction = {
-  category?: Category;
-  priority?: Priority;
-  confidence?: number;
-  reasonCategory?: string;
-  reasonPriority?: string;
+  category?: Category | null;
+  priority?: Priority | null;
+  confidence?: number | null;
+  reasonCategory?: string | null;
+  reasonPriority?: string | null;
+  modelVersion?: string | null;
+  predictedAt?: string | null;
 };
 
-export type HumanLabel = { category: Category; priority: Priority; confirmedAt: string };
+export type HumanLabel = { category: Category | null; priority: Priority | null; confirmedAt: string; source?: "manual" | "correction" };
 export type LabelsById = Record<string, HumanLabel>;
 
 export type Email = {
@@ -34,7 +36,7 @@ export type Email = {
   body: string;
   read: boolean;
   hasAttachments: boolean;
-  prediction?: Prediction;
+  prediction?: Prediction | null;
 };
 
 export type CategoryStat = { category: CategoryFilter; count: number; percentage: number };

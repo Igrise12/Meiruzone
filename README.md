@@ -4,7 +4,7 @@ A local-first Smart Inbox that will classify email, estimate its priority, and l
 
 ## Project status
 
-The React Smart Inbox runs locally with synthetic email data. The FastAPI backend provides validated inbox, labeling, category statistics, and explicit read-only IMAP sync backed by SQLite. Tasks 1–3 are implemented. The frontend still uses its fixture adapter; frontend API integration and trained models remain planned work.
+The React Smart Inbox reviews locally stored email and retains an explicit synthetic development mode. The FastAPI backend provides validated inbox, labeling, category statistics, and explicit read-only IMAP sync backed by SQLite. Tasks 1–4 are implemented. The frontend uses the local API by default, with an explicit offline fixture mode. Training and trained models remain planned work.
 
 Development starts with the **Open Design frontend handover**, using its design and source as the foundation. The frontend runs with synthetic email data, followed by backend integration and the ML workflow. See the [project task list](docs/TO-DO.md) for the current delivery order and completion criteria.
 
@@ -54,7 +54,7 @@ Model evaluation will include per-class precision, recall, F1, macro F1, and a c
 | Packaging | Docker and optional Docker Compose |
 | Continuous integration | GitHub Actions |
 
-React, FastAPI, SQLite, and safe IMAP ingestion are implemented. Machine learning, packaging, and CI remain later milestones.
+React/API integration, persistent human labeling, FastAPI, SQLite, and safe IMAP ingestion are implemented. Machine learning, packaging, and CI remain later milestones.
 
 ## Privacy and security
 
@@ -114,7 +114,7 @@ uv sync
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
 ```
 
-Run commands from the repository root. The backend creates an empty SQLite database at `data/meiruzone.sqlite3`, without contacting a mailbox. The application schema is available at `http://127.0.0.1:8000/openapi.json`; see the [API contract](docs/api-contract.md) for examples and the task 4 frontend mapping. Interactive API documentation is disabled to avoid external assets. The unused starter remains runnable with `uv run hello.py`.
+Run commands from the repository root. The backend creates an empty SQLite database at `data/meiruzone.sqlite3`, without contacting a mailbox. The application schema is available at `http://127.0.0.1:8000/openapi.json`; see the [API contract](docs/api-contract.md) for examples and frontend integration. Interactive API documentation is disabled to avoid external assets. The unused starter remains runnable with `uv run hello.py`.
 
 To exercise the API with ten synthetic messages, use a separate demo database:
 
@@ -202,18 +202,40 @@ Adjust `source` for a custom database. The exclusive create prevents overwriting
 
 For complete local deletion, stop the backend and remove the configured database plus its matching `-journal`, `-wal`, and `-shm` sidecars, and any backups you choose to delete. This removes local emails and labels, leaves the provider mailbox unchanged, and creates an empty database on next startup. Later sync can import provider messages again. File removal does not guarantee forensic erasure from the underlying storage; backup copies follow their own retention.
 
-Frontend setup commands are documented in [frontend/README.md](frontend/README.md). Its browser-stored demo labels remain separate from SQLite.
+Frontend setup commands are documented in [frontend/README.md](frontend/README.md). Offline fixture labels remain separate from SQLite; normal frontend labels are saved through the API.
 
-## Run the frontend preview
+## Run the Smart Inbox
 
 Requirements: Node.js 20.19+ or 22.12+ and npm 10+. From `frontend/`:
 
 ```bash
 npm install
-npm run dev
+npm run dev -- --host 127.0.0.1 --port 5173 --strictPort
 ```
 
-Vite prints the local preview URL. Check the frontend with `npm test`, `npm run lint`, `npm run typecheck`, and `npm run build`. The demo does not connect to a mailbox; confirmed labels stay in browser local storage.
+Start the backend first, then open `http://127.0.0.1:5173`. The UI uses the local API by default for server-side filters, 50-message pages, selected details, labels, sync outcomes, and dashboard totals. Choose Recent or Unread to sync up to 50 messages. Unavailable sync does not prevent review of stored mail.
+
+For offline synthetic development, use `VITE_DATA_SOURCE=fixtures npm run dev`. Browser fixture labels stay separate from SQLite. `VITE_API_BASE_URL` can select another loopback API ending in `/api/v1`; it never accepts remote hosts or embedded credentials. See the frontend README for production preview origin configuration.
+
+Run `npm test`, `npm run test:integration`, `npm run lint`, `npm run typecheck`, and `npm run build`. The integration command starts its own synthetic HTTP backend and temporary SQLite database, mocks IMAP, and verifies ingestion/correction/refresh/restart persistence without accessing a personal mailbox.
+
+### Build the labeled dataset
+
+Open a stored message and explicitly choose category and/or priority. Missing human fields remain Not labeled; saving priority alone does not confirm a category prediction. Saves retain original predictions and use server timestamps. Unsaved edits survive failed saves and refreshes in the current browser page; save them before reloading.
+
+Dashboard counts cover the complete database, independent of filters and pages. CSV export downloads all human labels for review, keeps predicted and confirmed columns separate, and escapes spreadsheet formulas. Its content is private local data.
+
+Task 5 can consume human category labels directly, without exporting personal email text:
+
+```python
+from app.config import Settings
+from app.database import Repository
+
+repository = Repository(Settings.from_env().database_path)
+examples = repository.category_training_examples()
+```
+
+Each example contains id, sender, address, subject, body, confirmed category, optional priority, confirmed_at, and source. The reader excludes predictions and priority-only labels, writes nothing, and expects an initialized database. It uses the backend's configured database path. Model fitting and evaluation remain task 5.
 
 ## Testing and quality
 
@@ -224,7 +246,7 @@ uv run python -m unittest discover -s tests
 uv lock --check
 ```
 
-Backend tests use temporary SQLite files and synthetic messages, covering API validation, access restrictions, migration rollback, MIME parsing, selective IMAP fetches, TLS/timeouts, deduplication, interrupted/concurrent sync, retained labels/predictions, and sanitized errors/debug logs. No personal mailbox or credentials are needed. Frontend checks are listed above. CI and the remaining integration/ML checks are planned:
+Backend tests use temporary SQLite files and synthetic messages, covering API validation, access restrictions, migration rollback, MIME parsing, selective IMAP fetches, TLS/timeouts, deduplication, interrupted/concurrent sync, retained labels/predictions, and sanitized errors/debug logs. No personal mailbox or credentials are needed. Frontend and HTTP integration checks are listed above. CI and ML checks remain planned:
 
 - Frontend filtering, labeling, correction, treemap category navigation, loading/error states, accessibility, and safe content rendering.
 - Dashboard category counts, percentages, human-label precedence, Unclassified messages, and refresh after sync or corrections.
@@ -245,5 +267,5 @@ Future experiments may add local LLM summaries, action items, semantic search, o
 
 - [Client brief](docs/client-brief.md): intended users, product experience, MVP scope, and success criteria.
 - [Architecture](docs/architecture.md): proposed components, data flows, local deployment, and constraints.
-- [API contract](docs/api-contract.md): implemented endpoints, examples, validation, and frontend mapping.
+- [API contract](docs/api-contract.md): implemented endpoints, validation, and frontend integration.
 - [Task list](docs/TO-DO.md): current frontend-first delivery order, testing, security, and milestone acceptance.
