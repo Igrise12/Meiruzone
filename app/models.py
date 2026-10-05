@@ -53,7 +53,7 @@ class ModelEvaluation(WireModel):
     confusion_matrix: list[list[Annotated[int, Field(ge=0, strict=True)]]]
 
     @model_validator(mode="after")
-    def require_square_matrix(self):
+    def require_square_matrix(self) -> "ModelEvaluation":
         size = len(self.per_class)
         if (len({row.category for row in self.per_class}) != size
                 or len(self.confusion_matrix) != size

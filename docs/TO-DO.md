@@ -7,7 +7,7 @@
 
 This checklist changes the delivery order to **frontend first**, using the frontend handed over from **Open Design** as the design and implementation base. Build and review the frontend with synthetic data before connecting the backend. The product scope and local-first requirements in the referenced documents still apply.
 
-Tasks 1–6 are complete. Task 2 brought forward the initial SQLite storage foundation; task 3 adds safe IMAP ingestion and real sync bookkeeping, task 5 adds explicit category training/evaluation with private versioned artifacts, and task 6 connects approved inference, bilingual priority rules, persisted cutoffs/errors, and deliberate feedback. The remaining later milestones are pending. Mark a task complete only when its deliverable and relevant checks are complete.
+Tasks 1–7 are complete. Task 2 brought forward the initial SQLite storage foundation; task 3 adds safe IMAP ingestion and real sync bookkeeping, task 5 adds explicit category training/evaluation with private versioned artifacts, task 6 connects approved inference, bilingual priority rules, persisted cutoffs/errors, and deliberate feedback, and task 7 adds locked CI, local Compose packaging, and release documentation. Full MVP acceptance remains task 8. Mark a task complete only when its deliverable and relevant checks are complete.
 
 ## 1. Frontend first: receive and integrate the Open Design handover
 
@@ -136,19 +136,21 @@ Tasks 1–6 are complete. Task 2 brought forward the initial SQLite storage foun
 
 ## 7. Add repeatable delivery and continuous integration
 
-Start frontend CI during milestone 1, then extend it as backend and ML capabilities become available.
+CI covers frontend, backend, ML, real HTTP integration, built-container browser checks, and secret scanning.
 
-- [ ] Run frontend linting, relevant type checks, tests, and production builds in GitHub Actions on pull requests and pushes to development branches.
-- [ ] Add backend linting, tests, and applicable type checks when the backend is introduced.
-- [ ] Add ML preprocessing, artifact-loading, and inference checks using synthetic fixtures and a small test model.
-- [ ] Add an integration/end-to-end check for inbox review, label correction, persistence, and prediction display using an isolated test database.
-- [ ] Package frontend and backend for local Docker/Compose use with persistent SQLite/model mounts and no baked-in secrets or private data.
-- [ ] Validate container builds in CI and restrict exposed ports to local access by default.
-- [ ] Check dependencies for known vulnerabilities and scan repository changes for accidentally committed secrets.
-- [ ] Document clean-clone setup, configuration, sync, labeling, training, evaluation, testing, backups, and local startup.
-- [ ] Define a local release containing the application and configuration; distribute only explicitly approved model artifacts containing no private user data.
+- [x] Run frontend linting, relevant type checks, tests, and production builds in GitHub Actions on pull requests and pushes to development branches.
+- [x] Add backend linting, tests, and applicable type checks when the backend is introduced.
+- [x] Add ML preprocessing, artifact-loading, and inference checks using synthetic fixtures and a small test model.
+- [x] Add an integration/end-to-end check for inbox review, label correction, persistence, and prediction display using an isolated test database.
+- [x] Package frontend and backend for local Docker/Compose use with persistent SQLite/model mounts and no baked-in secrets or private data.
+- [x] Validate container builds in CI and restrict exposed ports to local access by default.
+- [x] Check dependencies for known vulnerabilities and scan repository changes for accidentally committed secrets.
+- [x] Document clean-clone setup, configuration, sync, labeling, training, evaluation, testing, backups, and local startup.
+- [x] Define a local release containing the application and configuration; distribute only explicitly approved model artifacts containing no private user data.
 
 **Milestone complete when:** a clean checkout passes automated checks and starts locally with documented commands and safe configuration.
+
+**Implementation and verification:** SHA-pinned, read-only GitHub Actions jobs run locked Python/Node checks on pull requests, development/main pushes, and manual dispatch. Ruff and focused Pydantic/mypy checks cover configuration/API models; existing synthetic ML and real HTTP integration checks are reused. Digest-pinned multi-stage images serve built React through unprivileged Nginx and run one FastAPI worker, with loopback-only default ports, host UID/GID support, private SQLite/model mounts, and read-only serving models. The [delivery guide](delivery.md) documents clean setup, configuration, training/evaluation/activation, backups, checks, and a model-free versioned source release. Archive exclusion was checked with synthetic accidentally tracked private files. All 70 backend tests, 33 frontend tests, the real HTTP integration check, frontend lint/type/build checks, Ruff/mypy, lockfile checks, actionlint, and the built-container Chromium check passed, including clean-source installs. The browser check verifies empty startup, runtime permissions, saved prediction display/correction, container-recreation persistence, one-off synthetic training, retained model permissions/loading/inference, and isolated free loopback ports. Python/npm audits and redacted Git-history scans passed; vulnerable development-only Pygments/Tornado pins were updated through uv. Docker checks used elevated execution after sandbox daemon denial; workflow validation succeeded with a narrowly scoped file mount. No personal mailbox, database, or model was accessed. Hosted Actions will run after these files are pushed; no release tag, publication, or deployment was performed. Full MVP acceptance remains task 8.
 
 ## 8. Complete MVP acceptance and security review
 

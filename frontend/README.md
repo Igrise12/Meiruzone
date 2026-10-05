@@ -68,6 +68,8 @@ npm run build
 npm run preview
 ```
 
+Use `npm ci` for clean checkouts and CI. The [delivery guide](../docs/delivery.md) documents the two-service Compose package and its Chromium browser check (`npx playwright install --with-deps chromium`, then `npm run test:containers`). Container checks use temporary synthetic storage and rebuild the production images.
+
 `npm test` runs synthetic adapter/component/treemap tests. The separate integration command requires the repository's `.venv` and permission to bind a loopback port. It starts and cleans up its own HTTP backend and temporary database, mocks IMAP, and trains a small synthetic model and verifies ingestion-to-inference, safe rendering, correction, aggregate refresh, active-model and label persistence across frontend reload/backend restart, CSV export, and origin restrictions. It never contacts a personal mailbox. These commands use the project's Bash/local Linux workflow.
 
 `npm run build` checks TypeScript and creates `dist/`. Production data-source/API URL settings are selected at build time.

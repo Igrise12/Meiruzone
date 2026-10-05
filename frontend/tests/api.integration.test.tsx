@@ -71,6 +71,8 @@ suite("Smart Inbox against a real loopback API", () => {
     const detail = () => within(screen.getByRole("article", { name: "Selected email" }));
     expect(await detail().findByText('<img src="https://tracker.invalid/pixel" onerror="alert(1)">')).toBeInTheDocument();
     expect(document.querySelector(".detail-body img")).toBeNull();
+    expect(detail().getByRole("region", { name: "Original prediction" })).toHaveTextContent("Category confidence");
+    expect(detail().getByText(`Model: ${model.modelVersion}`, { exact: false })).toBeInTheDocument();
     fireEvent.change(detail().getByLabelText("Category"), { target: { value: "Personal" } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm labels" }));
     await waitFor(async () => expect((await api.getEmail(ingested.id)).humanLabel?.category).toBe("Personal"));

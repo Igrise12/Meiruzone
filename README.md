@@ -4,7 +4,7 @@ A local-first Smart Inbox that will classify email, estimate its priority, and l
 
 ## Project status
 
-The React Smart Inbox reviews locally stored email and retains an explicit synthetic development mode. The FastAPI backend provides validated inbox, labeling, category statistics, and explicit read-only IMAP sync backed by SQLite. Tasks 1–6 are implemented, including local category training/evaluation, approved model activation, sync-time inference, and independent priority rules. The frontend uses the local API by default, with an explicit offline fixture mode. Model lab displays active status and saved held-out metrics; missing or failed category predictions leave messages and manual labeling available.
+The React Smart Inbox reviews locally stored email and retains an explicit synthetic development mode. The FastAPI backend provides validated inbox, labeling, category statistics, and explicit read-only IMAP sync backed by SQLite. Tasks 1–7 are implemented, including local category training/evaluation, approved model activation, sync-time inference, independent priority rules, GitHub Actions, and local Docker Compose packaging. The frontend uses the local API by default, with an explicit offline fixture mode. Model lab displays active status and saved held-out metrics; missing or failed category predictions leave messages and manual labeling available. Follow the [delivery guide](docs/delivery.md) for repeatable setup and packaging; full MVP acceptance remains task 8.
 
 Development starts with the **Open Design frontend handover**, using its design and source as the foundation. The frontend runs with synthetic email data, followed by backend integration and the ML workflow. See the [project task list](docs/TO-DO.md) for the current delivery order and completion criteria.
 
@@ -311,10 +311,14 @@ High takes precedence over Low. The recognized negations “no action required�
 
 ## Testing and quality
 
+See the [delivery guide](docs/delivery.md) for clean-clone setup, local Docker Compose, GitHub Actions, security checks, and versioned source releases.
+
 Run backend checks from the repository root:
 
 ```bash
 uv run python -m unittest discover -s tests
+uv run --locked ruff check .
+uv run --locked mypy
 uv lock --check
 ```
 
@@ -325,7 +329,7 @@ Backend tests use temporary SQLite files and synthetic messages, covering API va
 - Backend input validation, persistence, API integration, and local access restrictions.
 - ML preprocessing, saved-model loading, valid predictions, missing fields, and missing or corrupt models.
 - The full ingestion-to-correction workflow using isolated storage and synthetic fixtures.
-- Linting, applicable type checks, production/container builds, dependency checks, and secret scanning in CI.
+- Linting, focused Python/TypeScript checks, production/container builds, dependency audits, and redacted secret scanning are configured in CI; see the delivery guide for local commands.
 
 See [TO-DO.md](docs/TO-DO.md) for testing and security tasks attached to each milestone.
 

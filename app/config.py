@@ -86,7 +86,7 @@ class Settings(BaseModel):
 
     @classmethod
     def from_env(cls) -> "Settings":
-        values = {}
+        values: dict[str, object] = {}
         for field, variable in (
             ("database_path", "MEIRUZONE_DATABASE_PATH"),
             ("demo", "MEIRUZONE_DEMO"),
