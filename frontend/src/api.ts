@@ -7,6 +7,15 @@ export type EmailQuery = { q?: string; category?: Exclude<CategoryFilter, "All">
 export type EmailPage = { items: EmailSummary[]; total: number; limit: number; offset: number };
 export type CategoryStats = { total: number; categories: CategoryStat[] };
 export type LabelPatch = { category?: Category; priority?: Priority; source: "manual" | "correction" };
+export type ModelStatus = {
+  state: "ready" | "unconfigured" | "invalid" | "demo";
+  modelVersion: string | null; supportedCategories: Category[];
+  reviewThreshold: number | null; thresholdOverridden: boolean;
+  evaluation: {
+    macroF1: number; perClass: { category: Category; precision: number; recall: number; f1: number }[];
+    confusionMatrix: number[][];
+  } | null;
+};
 export type SyncStatus = {
   available: boolean; demo: boolean; state: "idle" | "running" | "succeeded" | "partial" | "failed" | "unavailable";
   startedAt: string | null; completedAt: string | null; imported: number; processed: number; total: number; skipped: number; errorCode: string | null;
@@ -17,6 +26,7 @@ export type InboxAdapter = {
   getCategoryStats(signal?: AbortSignal): Promise<CategoryStats>;
   saveLabel(id: string, patch: LabelPatch): Promise<HumanLabel>;
   getSyncStatus(signal?: AbortSignal): Promise<SyncStatus>;
+  getModelStatus(signal?: AbortSignal): Promise<ModelStatus>;
   sync(mode: "recent" | "unread"): Promise<SyncStatus>;
 };
 
@@ -62,6 +72,7 @@ export function createHttpAdapter(baseUrl = "http://127.0.0.1:8000/api/v1", tran
     getCategoryStats: (signal) => request("/category-stats", { signal }),
     saveLabel: (id, patch) => request(`/emails/${encodeURIComponent(id)}/labels`, write("PATCH", patch)),
     getSyncStatus: (signal) => request("/sync", { signal }),
+    getModelStatus: (signal) => request("/model", { signal }),
     sync: (mode) => request("/sync", write("POST", { mode, limit: 50 })),
   };
 }
@@ -124,6 +135,9 @@ export const fixtureAdapter: InboxAdapter = {
     return label;
   },
   async getSyncStatus() { return { ...fixtureSync }; },
+  async getModelStatus() {
+    return { state: "demo", modelVersion: null, supportedCategories: [], reviewThreshold: null, thresholdOverridden: false, evaluation: null };
+  },
   async sync() {
     const now = new Date().toISOString();
     fixtureSync = { ...demoStatus(), state: "succeeded", startedAt: now, completedAt: now };

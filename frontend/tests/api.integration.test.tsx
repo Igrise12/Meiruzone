@@ -56,8 +56,14 @@ suite("Smart Inbox against a real loopback API", () => {
 
   it("ingests safely, corrects a prediction, refreshes aggregates and retains labels across reload/restart", async () => {
     const synced = await api.sync("recent"); expect(synced.imported).toBe(1);
+    const model = await api.getModelStatus(); expect(model.state).toBe("ready");
+    expect(model.supportedCategories).toEqual(["Recruitment", "Spam"]);
     const before = await api.getCategoryStats(); expect(before.total).toBe(11);
     const ingested = (await api.listEmails({ q: "Synthetic message" })).items[0];
+    expect(ingested.prediction).toMatchObject({ modelVersion: model.modelVersion, categoryError: null, priority: "Medium" });
+    expect(model.supportedCategories).toContain(ingested.prediction?.category);
+    expect(ingested.prediction?.confidence).toBeGreaterThanOrEqual(0);
+    expect(ingested.prediction?.reviewThreshold).toBe(model.reviewThreshold);
     expect(ingested).not.toHaveProperty("body");
     expect(Object.keys(ingested).sort()).toEqual(["address", "hasAttachments", "humanLabel", "id", "needsReview", "prediction", "read", "received", "receivedAt", "sender", "subject"].sort());
     const view = render(<App adapter={api} />);
@@ -65,23 +71,30 @@ suite("Smart Inbox against a real loopback API", () => {
     const detail = () => within(screen.getByRole("article", { name: "Selected email" }));
     expect(await detail().findByText('<img src="https://tracker.invalid/pixel" onerror="alert(1)">')).toBeInTheDocument();
     expect(document.querySelector(".detail-body img")).toBeNull();
+    fireEvent.change(detail().getByLabelText("Category"), { target: { value: "Personal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm labels" }));
+    await waitFor(async () => expect((await api.getEmail(ingested.id)).humanLabel?.category).toBe("Personal"));
+    await waitFor(() => expect(within(screen.getByLabelText("Category counts")).getByRole("button", { name: /Personal 3 27%/ })).toBeInTheDocument());
+    expect((await api.getEmail(ingested.id)).prediction).toEqual(ingested.prediction);
     fireEvent.change(screen.getByRole("searchbox"), { target: { value: "Recruitment" } });
     fireEvent.click(await screen.findByRole("button", { name: /Example Recruitment.*Synthetic Recruitment/ }));
     fireEvent.change(await detail().findByLabelText("Category"), { target: { value: "Personal" } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm labels" }));
     await screen.findByText("Your labels are saved on this device.");
-    await waitFor(() => expect(within(screen.getByLabelText("Category counts")).getByRole("button", { name: /Personal 3 27%/ })).toBeInTheDocument());
+    await waitFor(() => expect(within(screen.getByLabelText("Category counts")).getByRole("button", { name: /Personal 4 36%/ })).toBeInTheDocument());
     const corrected = await api.getEmail("demo-01");
     expect(corrected.humanLabel).toMatchObject({ category: "Personal", priority: null, source: "correction" });
     expect(corrected.prediction?.category).toBe("Recruitment"); expect(corrected.needsReview).toBe(false);
     expect((await api.getCategoryStats()).total).toBe(before.total);
     view.unmount(); await stop(); await start();
     expect((await api.getEmail("demo-01")).humanLabel).toEqual(corrected.humanLabel);
+    expect((await api.getEmail(ingested.id)).humanLabel?.category).toBe("Personal");
+    expect((await api.getModelStatus()).modelVersion).toBe(model.modelVersion);
     render(<App adapter={api} />);
     fireEvent.click(await screen.findByRole("button", { name: /Example Recruitment.*Synthetic Recruitment/ }));
     expect(await detail().findByLabelText("Category")).toHaveValue("Personal");
     expect(detail().getByLabelText("Priority")).toHaveValue("");
-    const exported = await confirmedLabelsCsv(api); expect(exported.count).toBe(2);
+    const exported = await confirmedLabelsCsv(api); expect(exported.count).toBe(3);
     expect(exported.csv).toContain('"Recruitment","High","61","Personal",""');
     const forbidden = await fetch(`http://127.0.0.1:${port}/api/v1/emails/demo-01/labels`, {
       method: "PATCH", headers: { Origin: "https://untrusted.invalid", "Content-Type": "application/json", "X-Meiruzone-Request": "1" }, body: JSON.stringify({ category: "Spam" }),

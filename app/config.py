@@ -14,7 +14,8 @@ class Settings(BaseModel):
 
     database_path: Path = Path("data/meiruzone.sqlite3")
     demo: bool = False
-    review_threshold: float = Field(default=70, ge=0, le=100)
+    model_directory: Path | None = Field(default=None, repr=False)
+    review_threshold: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
     frontend_origins: tuple[str, ...] = (
         "http://localhost:5173",
         "http://127.0.0.1:5173",
@@ -89,6 +90,7 @@ class Settings(BaseModel):
         for field, variable in (
             ("database_path", "MEIRUZONE_DATABASE_PATH"),
             ("demo", "MEIRUZONE_DEMO"),
+            ("model_directory", "MEIRUZONE_MODEL_DIRECTORY"),
             ("review_threshold", "MEIRUZONE_REVIEW_THRESHOLD"),
             ("imap_host", "MEIRUZONE_IMAP_HOST"),
             ("imap_port", "MEIRUZONE_IMAP_PORT"),

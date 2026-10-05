@@ -51,9 +51,9 @@ Fixture mode uses only synthetic messages. Its labels remain in browser local st
 
 Category and priority are independent. Unconfirmed fields start as Not labeled; choosing priority alone does not confirm a suggested category. Save submits only newly confirmed or changed values. The backend assigns the timestamp and retains original predictions. Unsaved drafts survive failed saves, selection changes, and data refreshes in the current page session; a browser reload discards unsaved edits. Existing labels cannot be cleared in this API version.
 
-The treemap and inbox counters cover all stored messages regardless of filters/pages. Save, sync completion, and Refresh inbox reload current records and aggregates. Needs Review uses the backend's configured threshold. CSV export reads every human-labeled page, preserves separate predicted/confirmed columns, escapes spreadsheet formulas, and downloads no incomplete file after a fetch failure. Export is disabled while a known sync runs.
+The treemap and inbox counters cover all stored messages regardless of filters/pages. Save, sync completion, and Refresh inbox reload current records and aggregates. Needs Review uses each prediction's saved cutoff unless backend configuration explicitly overrides it; null cutoffs review every unconfirmed category prediction. CSV export reads every human-labeled page, preserves separate predicted/confirmed columns, escapes spreadsheet formulas, and downloads no incomplete file after a fetch failure. Export is disabled while a known sync runs.
 
-The CSV is a review export without message bodies. Local category training reads the full human-category dataset using `Repository.category_training_examples()`; see the root README. Model training remains task 5.
+The CSV is a review export without message bodies. Local category training reads the full human-category dataset using `Repository.category_training_examples()`; see the root README. Training is an explicit local command; Model lab displays approved model status, supported categories, effective cutoff, saved per-class/macro metrics, and a confusion matrix in saved class order. See the root README for training, approval, configuration, and restart. Missing/invalid models and per-message inference failures keep message review and labeling available; priority rules still run. Fixture mode shows demo status and no evaluated metrics.
 
 ## Checks
 
@@ -68,6 +68,6 @@ npm run build
 npm run preview
 ```
 
-`npm test` runs synthetic adapter/component/treemap tests. The separate integration command requires the repository's `.venv` and permission to bind a loopback port. It starts and cleans up its own HTTP backend and temporary database, mocks IMAP, and verifies ingestion, safe rendering, correction, aggregate refresh, frontend reload/backend restart persistence, CSV export, and origin restrictions. It never contacts a personal mailbox. These commands use the project's Bash/local Linux workflow.
+`npm test` runs synthetic adapter/component/treemap tests. The separate integration command requires the repository's `.venv` and permission to bind a loopback port. It starts and cleans up its own HTTP backend and temporary database, mocks IMAP, and trains a small synthetic model and verifies ingestion-to-inference, safe rendering, correction, aggregate refresh, active-model and label persistence across frontend reload/backend restart, CSV export, and origin restrictions. It never contacts a personal mailbox. These commands use the project's Bash/local Linux workflow.
 
 `npm run build` checks TypeScript and creates `dist/`. Production data-source/API URL settings are selected at build time.

@@ -67,7 +67,7 @@ class MLTests(unittest.TestCase):
             connection.execute("INSERT INTO human_labels VALUES (?, ?, ?, ?, ?)", (
                 "priority-only", None, "High", "2026-10-05T00:00:00Z", "manual",
             ))
-            connection.execute("INSERT INTO predictions VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (
+            connection.execute("INSERT INTO predictions(email_id, category, priority, confidence, reason_category, reason_priority, model_version, predicted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (
                 "unverified", "Spam", "Low", 99, None, None, "synthetic", "2026-10-05T00:00:00Z",
             ))
         return repository
@@ -203,7 +203,7 @@ class MLTests(unittest.TestCase):
     def test_missing_corrupt_and_incompatible_models_are_sanitized(self):
         with self.assertRaises(MLFailure):
             load_model(self.root / "missing")
-        for change in ("dependencies", "artifact_format", "preprocessing_version", "review_threshold", "supported_classes"):
+        for change in ("dependencies", "artifact_format", "preprocessing_version", "review_threshold", "supported_classes", "test"):
             with self.subTest(change=change):
                 directory = self.saved()
                 report = json.loads((directory / "evaluation.json").read_text())

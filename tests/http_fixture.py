@@ -10,13 +10,23 @@ from app.config import Settings
 from app.database import Repository
 from app.demo import demo_emails
 from app.main import create_app
+from app.train import save_model, train_baseline
 from imap_fixtures import FakeIMAP, message
+from test_ml import synthetic_examples
 
 
 def main():
+    model_root = Path(sys.argv[1]).parent / "models"
+    runs = sorted(model_root.glob("category-*"))
+    if runs:
+        model_directory = runs[0]
+    else:
+        pipeline, report = train_baseline(synthetic_examples(("Recruitment", "Spam")))
+        model_directory = save_model(pipeline, report, model_root)
     settings = Settings(
         database_path=Path(sys.argv[1]), imap_host="imap.example.test",
         imap_username="synthetic-user@example.test", imap_password="synthetic-password",
+        model_directory=model_directory,
     )
     repository = Repository(settings.database_path)
     repository.initialize()

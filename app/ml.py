@@ -19,13 +19,23 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer
 from sklearn.utils.validation import check_is_fitted
 
-from app.models import CATEGORIES, Prediction
+from app.models import CATEGORIES, ModelEvaluation, Prediction, Priority
 from app.parser import clean_text
 
 
 ARTIFACT_FORMAT = 1
 PREPROCESSING_VERSION = 1
 TOKEN_PATTERN = re.compile(r"(?u)\b\w\w+\b")  # TF-IDF's default word tokens.
+PRIORITY_VERSION = "priority-rules-v1"
+HIGH_PRIORITY = re.compile(
+    r"\b(?:urgent|asap|action required|reply today|due today|due tomorrow|deadline|"
+    r"mendesak|segera|perlu tindakan|balas hari ini|jatuh tempo hari ini|jatuh tempo besok|tenggat)\b"
+)
+LOW_PRIORITY = re.compile(
+    r"\b(?:newsletter|unsubscribe|fyi|no action required|buletin|berhenti berlangganan|"
+    r"sekadar informasi|tidak perlu tindakan)\b"
+)
+NEGATED_ACTION = re.compile(r"\b(?:no action required|tidak perlu tindakan)\b")
 
 
 class MLFailure(ValueError):
@@ -56,6 +66,31 @@ def dependency_versions() -> dict[str, str]:
     }}
 
 
+def evaluation_summary(metadata: dict) -> ModelEvaluation:
+    """Expose only validated aggregate held-out metrics in saved class order."""
+    test = metadata["test"]
+    report = test["classification_report"]
+    return ModelEvaluation(
+        macro_f1=test["macro_f1"], confusion_matrix=test["confusion_matrix"],
+        per_class=[{
+            "category": category, "precision": report[category]["precision"],
+            "recall": report[category]["recall"], "f1": report[category]["f1-score"],
+        } for category in metadata["supported_classes"]],
+    )
+
+
+def predict_priority(email: Mapping) -> tuple[Priority, str]:
+    text = " ".join(normalize_email({
+        "subject": email.get("subject"), "body": email.get("body"),
+    }).split())
+    # ponytail: keywords include quoted text; parse message structure if false positives matter.
+    if HIGH_PRIORITY.search(NEGATED_ACTION.sub("", text)):
+        return "High", f"Urgency or action phrase matched ({PRIORITY_VERSION})."
+    if LOW_PRIORITY.search(text):
+        return "Low", f"Informational or subscription phrase matched ({PRIORITY_VERSION})."
+    return "Medium", f"No urgency or informational phrase matched ({PRIORITY_VERSION})."
+
+
 def load_model(directory: Path) -> dict:
     """Load a run created by app.train. The caller must trust its local provenance.
 
@@ -80,6 +115,7 @@ def load_model(directory: Path) -> dict:
                     isinstance(threshold, bool) or not isinstance(threshold, (int, float))
                     or not math.isfinite(threshold) or not 0 <= threshold <= 100))):
             raise MLFailure("Model metadata is invalid; retrain locally.")
+        evaluation_summary(metadata)
         with warnings.catch_warnings():
             warnings.simplefilter("error", InconsistentVersionWarning)
             model = joblib.load(directory / "model.joblib")
@@ -110,7 +146,9 @@ def predict_category(model: dict, email: Mapping) -> Prediction:
         raise MLFailure("Email has no usable text for a category prediction.")
     try:
         pipeline = model["pipeline"]
-        probabilities = pipeline.predict_proba([email])[0]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            probabilities = pipeline.predict_proba([email])[0]
         if (len(probabilities) != len(pipeline.classes_)
                 or not np.isfinite(probabilities).all()
                 or (probabilities < 0).any() or (probabilities > 1).any()
@@ -120,6 +158,7 @@ def predict_category(model: dict, email: Mapping) -> Prediction:
         return Prediction(
             category=str(pipeline.classes_[index]), confidence=float(probabilities[index] * 100),
             model_version=model["metadata"]["model_version"],
+            review_threshold=model["metadata"]["review_threshold"],
         )
     except MLFailure:
         raise

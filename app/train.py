@@ -204,7 +204,7 @@ def save_model(pipeline: Pipeline, report: dict, root: Path = Path("models")) ->
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Train and evaluate a local human-labeled category baseline.")
-    parser.add_argument("--database", type=Path, help="Existing version 2 SQLite database (defaults to backend configuration).")
+    parser.add_argument("--database", type=Path, help="Existing version 2 or 3 SQLite database (defaults to backend configuration).")
     parser.add_argument("--output-dir", type=Path, default=Path("models"), help="Private local artifact directory (default: models).")
     args = parser.parse_args(argv)
     try:
@@ -215,7 +215,7 @@ def main(argv=None) -> int:
         try:
             examples = Repository(database).category_training_examples()
         except (OSError, sqlite3.Error, ValueError):
-            raise MLFailure("Training requires a readable, initialized version 2 database; start the backend first.") from None
+            raise MLFailure("Training requires a readable, initialized version 2 or 3 database; start the backend first.") from None
         pipeline, report = train_baseline(examples)
         destination = save_model(pipeline, report, args.output_dir)
         print((destination / "evaluation.json").read_text(encoding="utf-8"), end="")

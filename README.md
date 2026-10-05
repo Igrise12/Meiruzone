@@ -4,7 +4,7 @@ A local-first Smart Inbox that will classify email, estimate its priority, and l
 
 ## Project status
 
-The React Smart Inbox reviews locally stored email and retains an explicit synthetic development mode. The FastAPI backend provides validated inbox, labeling, category statistics, and explicit read-only IMAP sync backed by SQLite. Tasks 1–5 are implemented, including local category training, evaluation, and versioned model artifacts. The frontend uses the local API by default, with an explicit offline fixture mode. Backend inference and independent priority assignment remain task 6.
+The React Smart Inbox reviews locally stored email and retains an explicit synthetic development mode. The FastAPI backend provides validated inbox, labeling, category statistics, and explicit read-only IMAP sync backed by SQLite. Tasks 1–6 are implemented, including local category training/evaluation, approved model activation, sync-time inference, and independent priority rules. The frontend uses the local API by default, with an explicit offline fixture mode. Model lab displays active status and saved held-out metrics; missing or failed category predictions leave messages and manual labeling available.
 
 Development starts with the **Open Design frontend handover**, using its design and source as the foundation. The frontend runs with synthetic email data, followed by backend integration and the ML workflow. See the [project task list](docs/TO-DO.md) for the current delivery order and completion criteria.
 
@@ -54,7 +54,7 @@ Model evaluation includes per-class precision, recall, F1, macro F1, and a confu
 | Packaging | Docker and optional Docker Compose |
 | Continuous integration | GitHub Actions |
 
-React/API integration, persistent human labeling, FastAPI, SQLite, safe IMAP ingestion, and category training/evaluation are implemented. Backend inference, priority assignment, packaging, and CI remain later milestones.
+React/API integration, persistent human labeling, FastAPI, SQLite, safe IMAP ingestion, and category training/evaluation are implemented. Approved model activation, sync-time inference, and priority rules are implemented. Packaging and CI remain later milestones.
 
 ## Privacy and security
 
@@ -148,7 +148,8 @@ uv run --env-file .env uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-ac
 | --- | --- |
 | `MEIRUZONE_DATABASE_PATH` | `data/meiruzone.sqlite3` relative to the working directory |
 | `MEIRUZONE_DEMO` | `false` |
-| `MEIRUZONE_REVIEW_THRESHOLD` | `70`, in the range 0–100 |
+| `MEIRUZONE_MODEL_DIRECTORY` | Unconfigured; exact trusted, evaluated local run directory |
+| `MEIRUZONE_REVIEW_THRESHOLD` | Unset; optional numeric 0–100 override of all saved cutoffs |
 | `MEIRUZONE_FRONTEND_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` |
 | `MEIRUZONE_IMAP_HOST` | Unconfigured; hostname or IP address, without a URL |
 | `MEIRUZONE_IMAP_PORT` | `993`, in the range 1–65535; always implicit TLS |
@@ -158,7 +159,7 @@ uv run --env-file .env uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-ac
 
 Origins must be explicit loopback origins without paths or wildcards. To allow a different frontend port, add its exact origin to the comma-separated list. IMAP host, username, and a nonempty password are all required to enable real sync. Incomplete configuration keeps local inbox access available and reports sync unavailable. Control characters in IMAP configuration are rejected; passwords are masked in settings and excluded from serialization. The account scope stores a hash of host/port/username, with no password.
 
-SQLite files are created with user-only permissions. Schema version 2 uses `PRAGMA user_version`, with a transactional migration from version 1 preserving emails, predictions, labels, and demo state. Unknown versions are refused without deleting data. Ingestion updates message fields while leaving predictions and human labels intact.
+SQLite files are created with user-only permissions. Schema version 3 uses `PRAGMA user_version`; transactional migrations preserve records and add scoped IMAP state plus prediction cutoffs/errors. Existing predictions receive cutoff 70. Unknown versions are refused without deleting data. Ingestion updates message fields and fills missing predictions atomically with identity/progress, preserving completed predictions and all human labels.
 
 ### Sync real mail
 
@@ -236,7 +237,7 @@ repository = Repository(Settings.from_env().database_path)
 examples = repository.category_training_examples()
 ```
 
-Each example contains id, sender, address, subject, body, confirmed category, optional priority, confirmed_at, and source. The reader excludes predictions and priority-only labels, opens SQLite read-only, and expects an initialized version 2 database. It never creates or migrates storage.
+Each example contains id, sender, address, subject, body, confirmed category, optional priority, confirmed_at, and source. The reader excludes predictions and priority-only labels, opens SQLite read-only, and expects an initialized version 2 or 3 database. It never creates or migrates storage.
 
 ### Train and evaluate the category model
 
@@ -281,7 +282,32 @@ prediction = predict_category(model, {
 print(prediction.category, prediction.confidence)
 ```
 
-This helper returns the existing category/confidence/model-version record, with priority and prediction time unset. It rejects messages with no usable text. Loading checks format, preprocessing version, class ordering, fitted pipeline, and exact recorded environment versions; missing, corrupt, or incompatible runs produce sanitized errors. Retrain after an incompatible environment change. Joblib loading can execute code: metadata validation does **not** establish trust. Never load an untrusted download or uploaded model. See [scikit-learn's persistence guidance](https://scikit-learn.org/stable/model_persistence.html). Backend activation and application of this cutoff to the Smart Inbox remain task 6; the backend's current review setting is unchanged.
+This helper returns category, confidence, model version, and the saved review cutoff, with priority and prediction time unset. It rejects messages with no usable text. Loading checks format, preprocessing version, class ordering, fitted pipeline, and exact recorded environment versions; missing, corrupt, or incompatible runs produce sanitized errors. Retrain after an incompatible environment change. Joblib loading can execute code: metadata validation does **not** establish trust. Never load an untrusted download or uploaded model. See [scikit-learn's persistence guidance](https://scikit-learn.org/stable/model_persistence.html). The backend uses this trusted loader during startup when a model directory is configured; see the activation workflow below.
+
+### Activate and serve category predictions
+
+1. Accumulate confirmed category corrections in the Smart Inbox. Priority-only labels and predictions never become category ground truth.
+2. Run `uv run --env-file .env python -m app.train` (or omit `--env-file` when using process configuration). Training evaluates and saves a new private version without changing the active model or database.
+3. Inspect the printed aggregate evaluation and saved `evaluation.json`: supported/missing classes, per-class metrics, macro F1, confusion matrix, sample counts, review coverage/accuracy, and limitations. Deliberately approve a suitable run; activation is not automatic and no fixed score guarantees quality.
+4. Set `MEIRUZONE_MODEL_DIRECTORY` in your private `.env` to that exact locally trained run directory. Remove an existing `MEIRUZONE_REVIEW_THRESHOLD=70` assignment to use validated model cutoffs; keep a numeric override only if intentionally desired.
+5. Stop and restart the single backend process with the documented startup command, then inspect Model lab or `GET /api/v1/model`. Only trust artifacts you created locally: Joblib loading can execute code. No file watching, uploads, or automatic model selection occurs.
+6. Sync recent/unread messages. New messages and selected messages missing a category prediction use the active model; category failures are retried on a later sync. Missing priority is filled independently. Completed predictions, including their original version/cutoff/time, remain intact on repeat sync, even after selecting a replacement or updating message text. Other stored messages are untouched; there is no backfill command.
+
+Each prediction retains its model's validation cutoff. Numeric cutoffs accept equal confidence; lower confidence needs review. Null cutoffs review all unconfirmed category predictions, including confidence 100. An explicit numeric `MEIRUZONE_REVIEW_THRESHOLD` overrides every stored cutoff, including review-all, without changing saved values. Removing the override restores saved behavior. Human categories suppress Needs Review; priority-only labels do not. Missing categories/confidence remain outside Needs Review and show their own status.
+
+A missing, corrupt, or incompatible selected run reports unconfigured/invalid status without stopping inbox access or sync. New mail still receives priority, with `categoryError=model_unavailable`; failed per-message category inference records `inference_failed`. These errors do not count as IMAP skips or failed sync. Messages, identity, predictions, and progress commit together. Errors omit private exception details and content. Model lab shows only validated aggregate held-out metrics in saved class order, never paths, vocabulary, or raw training examples. Demo mode ignores model selection and keeps illustrative predictions separate from evaluated models.
+
+### Independent priority rules
+
+`priority-rules-v1` uses NFKC/case/whitespace-normalized subject and body only, matching whole words or phrases independently of category, confidence, read state, and attachment presence:
+
+| Priority | English signals | Indonesian signals |
+| --- | --- | --- |
+| High | urgent, asap, action required, reply today, due today, due tomorrow, deadline | mendesak, segera, perlu tindakan, balas hari ini, jatuh tempo hari ini, jatuh tempo besok, tenggat |
+| Low | newsletter, unsubscribe, fyi, no action required | buletin, berhenti berlangganan, sekadar informasi, tidak perlu tindakan |
+| Medium | No High/Low signal | No High/Low signal |
+
+High takes precedence over Low. The recognized negations “no action required” and “tidak perlu tindakan” are removed before matching High. Each result saves a short fixed explanation identifying the rule version; priority-only predictions use that version in `modelVersion`. These are simple text cues, not calendar/deadline parsing: quoted text and other negations can cause false positives. Confirmed human priority remains authoritative, and existing predicted priority is not recalculated during sync.
 
 ## Testing and quality
 

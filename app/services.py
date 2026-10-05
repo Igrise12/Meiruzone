@@ -6,9 +6,10 @@ from datetime import UTC, datetime
 from .config import Settings
 from .database import Repository
 from .imap import ERROR_MESSAGES, SyncFailure, fetch_message, message_uids, open_mailbox
+from .ml import PRIORITY_VERSION, MLFailure, evaluation_summary, load_model, predict_category, predict_priority
 from .models import (
     CATEGORIES, CategoryStat, CategoryStats, EmailPage, EmailQuery, EmailSummary,
-    LabelPatch, SyncRequest, SyncStatus,
+    LabelPatch, ModelStatus, Prediction, SyncRequest, SyncStatus,
 )
 from .parser import MessageSkipped
 
@@ -25,6 +26,55 @@ class InboxService:
     def __init__(self, repository: Repository, settings: Settings):
         self.repository = repository
         self.settings = settings
+        self.model = None
+        self.model_state = "unconfigured"
+
+    def initialize_model(self) -> None:
+        self.model = None
+        self.model_state = "unconfigured"
+        if self.settings.demo:
+            self.model_state = "demo"
+        elif self.settings.model_directory is not None:
+            try:
+                self.model = load_model(self.settings.model_directory)
+                self.model_state = "ready"
+            except MLFailure:
+                self.model_state = "invalid"
+
+    def model_status(self) -> ModelStatus:
+        if self.model is None:
+            return ModelStatus(state=self.model_state)
+        metadata = self.model["metadata"]
+        return ModelStatus(
+            state="ready", model_version=metadata["model_version"],
+            supported_categories=metadata["supported_classes"],
+            review_threshold=(self.settings.review_threshold if self.settings.review_threshold is not None
+                              else metadata["review_threshold"]),
+            threshold_overridden=self.settings.review_threshold is not None,
+            evaluation=evaluation_summary(metadata),
+        )
+
+    def predict(self, email, existing: Prediction | None) -> Prediction:
+        prediction = existing.model_copy() if existing else Prediction(review_threshold=None)
+        complete = prediction.category is not None and prediction.confidence is not None
+        if not complete:
+            if self.model is None:
+                prediction.category_error = "model_unavailable"
+            else:
+                try:
+                    category = predict_category(self.model, email)
+                    for field in ("category", "confidence", "model_version", "review_threshold", "reason_category"):
+                        setattr(prediction, field, getattr(category, field))
+                    prediction.category_error = None
+                except Exception:
+                    # Private exception details never leave the inference boundary.
+                    prediction.category_error = "inference_failed"
+            prediction.predicted_at = datetime.now(UTC)
+        if prediction.priority is None:
+            prediction.priority, prediction.reason_priority = predict_priority(email)
+            if prediction.model_version is None and prediction.category is None:
+                prediction.model_version = PRIORITY_VERSION
+        return prediction
 
     def list_emails(self, query: EmailQuery) -> EmailPage:
         emails, total = self.repository.list_emails(query, self.settings.review_threshold)
@@ -87,7 +137,9 @@ class InboxService:
                     except MessageSkipped:
                         self.repository.record_skip()
                     else:
-                        self.repository.store_message(mailbox_id, uid_validity, uid, email)
+                        existing = self.repository.ingested_prediction(mailbox_id, uid_validity, uid)
+                        prediction = self.predict(vars(email), existing)
+                        self.repository.store_message(mailbox_id, uid_validity, uid, email, prediction)
         except SyncFailure as error:
             error_code = error.code
         except sqlite3.Error:

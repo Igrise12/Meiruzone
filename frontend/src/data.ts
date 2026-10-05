@@ -22,6 +22,8 @@ export type Prediction = {
   reasonPriority?: string | null;
   modelVersion?: string | null;
   predictedAt?: string | null;
+  reviewThreshold?: number | null;
+  categoryError?: "model_unavailable" | "inference_failed" | null;
 };
 
 export type HumanLabel = { category: Category | null; priority: Priority | null; confirmedAt: string; source?: "manual" | "correction" };

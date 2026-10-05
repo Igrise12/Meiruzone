@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
-import { ApiError, confirmedLabelsCsv, createHttpAdapter, priorityOf, type CategoryStats, type EmailDetail as StoredEmail, type EmailSummary, type InboxAdapter, type LabelPatch, type SyncStatus, receivedText } from "./api";
+import { ApiError, confirmedLabelsCsv, createHttpAdapter, priorityOf, type CategoryStats, type EmailDetail as StoredEmail, type EmailSummary, type InboxAdapter, type LabelPatch, type ModelStatus, type SyncStatus, receivedText } from "./api";
 import { categories, priorities, type Category, type CategoryFilter, type HumanLabel, type Priority } from "./data";
 import { buildTreemap, categoryColors, type TreemapNode } from "./treemap";
 
@@ -28,6 +28,11 @@ function categoryOf(email: EmailSummary): CategoryFilter {
 
 const httpAdapter = createHttpAdapter(import.meta.env.VITE_API_BASE_URL);
 type Draft = { category: Category | ""; priority: Priority | "" };
+const confidenceText = (value: number) => `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
+function categoryFailure(code: "model_unavailable" | "inference_failed" | null | undefined): string {
+  return code === "model_unavailable" ? "Category model unavailable. Activate a local model, restart, and sync again to retry." :
+    code === "inference_failed" ? "Category prediction failed. This message and its priority are available; sync again to retry." : "";
+}
 function syncFailure(code: string | null): string {
   switch (code) {
     case "sync_unavailable": return "Configure IMAP in the backend environment to enable sync.";
@@ -84,6 +89,8 @@ function App({ adapter = httpAdapter }: { adapter?: InboxAdapter }) {
   const [toast, setToast] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
+  const [modelError, setModelError] = useState("");
   const [syncCheck, setSyncCheck] = useState(0);
   const [syncMode, setSyncMode] = useState<"recent" | "unread">("recent");
   const [syncError, setSyncError] = useState("");
@@ -96,6 +103,18 @@ function App({ adapter = httpAdapter }: { adapter?: InboxAdapter }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const toastTimer = useRef<number | undefined>(undefined);
   const lastSyncState = useRef<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setModelStatus(null);
+    setModelError("");
+    adapter.getModelStatus(controller.signal).then((status) => {
+      if (!controller.signal.aborted) setModelStatus(status);
+    }).catch(() => {
+      if (!controller.signal.aborted) setModelError("Model status could not be loaded. Stored messages remain available.");
+    });
+    return () => controller.abort();
+  }, [adapter, refresh]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -318,7 +337,7 @@ function App({ adapter = httpAdapter }: { adapter?: InboxAdapter }) {
         <main className="app-main">
           {countsError && <div className="state-message error-message" role="alert"><p>{countsError}</p><button type="button" className="text-button" onClick={refreshInbox}>Retry counts</button></div>}
           {page === "models" ? (
-            <ModelLab demo={syncStatus?.demo ?? false} exportDisabled={exporting || syncRunning} confirmedCount={confirmedCount} onReview={() => { setPage("inbox"); setFilter("all"); }} onExport={exportLabels} />
+            <ModelLab status={modelStatus} error={modelError} onRetry={refreshInbox} exportDisabled={exporting || syncRunning} confirmedCount={confirmedCount} onReview={() => { setPage("inbox"); setFilter("all"); }} onExport={exportLabels} />
           ) : (
             <section className="view" aria-labelledby="inbox-title">
               <header className="page-heading">
@@ -333,6 +352,8 @@ function App({ adapter = httpAdapter }: { adapter?: InboxAdapter }) {
                 <span><strong>{syncStatus?.demo ? "Demo mailbox" : "Local mailbox"}</strong> <span>— {syncMessage}</span></span>
                 {syncError ? <button className="text-button" type="button" onClick={() => setSyncCheck((value) => value + 1)}>Check sync status</button> : <button className="text-button" type="button" onClick={() => setDialogOpen(true)}>Set up a mailbox</button>}
               </div>
+
+              {(modelError || modelStatus?.state === "unconfigured" || modelStatus?.state === "invalid") && <div className="workspace-note" role="status"><span>{modelError || (modelStatus?.state === "invalid" ? "The selected category model could not be loaded. Check the local artifact and restart the backend." : "No category model is active. Priority rules and manual labels remain available.")}</span><button className="text-button" type="button" onClick={() => setPage("models")}>View model status</button></div>}
 
               {loadError && <div className="state-message error-message" role="alert"><strong>Inbox unavailable</strong><p>{loadError}</p><button className="text-button" type="button" onClick={refreshInbox}>Retry inbox</button></div>}
               {(syncError || outcomeError || (syncRequestError && syncStatus?.state !== "running")) && <div className="state-message error-message" role="alert"><strong>Sync needs attention</strong><p>{syncError || outcomeError || syncRequestError}</p></div>}
@@ -417,7 +438,7 @@ function EmailRow({ email, selected, onClick }: { email: EmailSummary; selected:
   return <button className={`email-row ${email.read ? "read" : "unread"}`} type="button" aria-current={selected ? "true" : "false"} aria-label={`${email.sender}, ${email.subject}, ${category}, ${priority ?? "priority unavailable"}${review ? ", needs review" : ""}`} onClick={onClick}>
     <span className="email-row-top"><span className="email-sender">{email.sender}</span><span className="email-time">{email.received}</span></span>
     <span className="email-subject">{email.subject}</span>
-    <span className="email-row-bottom"><span className="tag">{category}</span>{priority && <span className={`tag priority-tag ${priority.toLowerCase()}`}>{priority}</span>}{review && <span className="review-status">Needs review</span>}{email.hasAttachments && <span className="attachment-status">Attachment</span>}{!email.read && <span className="unread-status">Unread</span>}<span className="confidence">{email.prediction?.confidence == null ? "No prediction" : `${email.prediction.confidence}%`}</span></span>
+    <span className="email-row-bottom"><span className="tag">{category}</span>{priority && <span className={`tag priority-tag ${priority.toLowerCase()}`}>{priority}</span>}{review && <span className="review-status">Needs review</span>}{email.hasAttachments && <span className="attachment-status">Attachment</span>}{!email.read && <span className="unread-status">Unread</span>}<span className="confidence">{email.prediction?.categoryError === "inference_failed" ? "Prediction failed" : email.prediction?.confidence == null ? "No prediction" : confidenceText(email.prediction.confidence)}</span></span>
   </button>;
 }
 
@@ -427,7 +448,10 @@ function EmailDetail({ email, label, draftCategory, draftPriority, saving, hasCh
     <div className="detail-top"><div className="detail-top-copy"><button className="back-to-list" type="button" onClick={onBack}>← Back to messages</button><h2>{email.subject}</h2><p className="detail-sender">{email.sender} &lt;{email.address}&gt;</p><span className="detail-time">{email.received} · Stored locally</span></div></div>
     <div className="detail-body"><p>{email.body}</p><div className="message-flags"><span>{email.read ? "Read" : "Unread"}</span><span>{email.hasAttachments ? "Has attachment" : "No attachments"}</span></div></div>
     <section className="prediction-block" aria-label="Original prediction"><div className="prediction-head"><strong>Original prediction</strong><span className="demo-label">{prediction ? "Stored prediction" : "Not available"}</span></div>
-      {prediction ? <><div className="prediction-values"><span className="tag">{prediction.category ?? "Category unavailable"}</span><span className="tag priority-tag">{prediction.priority ?? "Priority unavailable"} priority</span><span className="tag">{prediction.confidence == null ? "Confidence unavailable" : `Category confidence ${prediction.confidence}%`}</span></div><p className="prediction-explanation">{prediction.reasonCategory ?? "No prediction explanation is available."}</p></> : <p className="prediction-explanation">No model prediction is available for this message yet.</p>}
+      {prediction ? <><div className="prediction-values"><span className="tag">{prediction.category ?? "Category unavailable"}</span><span className="tag priority-tag">{prediction.priority ?? "Priority unavailable"} priority</span><span className="tag">{prediction.confidence == null ? "Confidence unavailable" : `Category confidence ${confidenceText(prediction.confidence)}`}</span></div><p className="prediction-explanation">{prediction.reasonCategory ?? "No prediction explanation is available."}</p></> : <p className="prediction-explanation">No model prediction is available for this message yet.</p>}
+      {prediction?.categoryError && <p className="prediction-explanation" role="status">{categoryFailure(prediction.categoryError)}</p>}
+      {prediction?.reasonPriority && <p className="prediction-explanation">{prediction.reasonPriority}</p>}
+      {prediction?.category && <p className="prediction-explanation">Model: {prediction.modelVersion ?? "Version unavailable"}{prediction.predictedAt ? ` · ${receivedText(prediction.predictedAt)}` : ""}. {prediction.reviewThreshold === null ? "All unconfirmed category predictions need review." : prediction.reviewThreshold !== undefined ? `Review cutoff: ${confidenceText(prediction.reviewThreshold)}.` : ""}</p>}
     </section>
     <section className="edit-block" aria-labelledby="edit-labels-title"><div className="edit-heading"><strong id="edit-labels-title">Your confirmed labels</strong><span>{label ? "Human label · saved on this device" : "Separate from prediction"}</span></div>
       <div className="edit-fields"><div className="field"><label htmlFor="edit-category">Category</label><select id="edit-category" value={draftCategory} disabled={saving} onChange={(event) => onCategory(event.target.value as Category | "")}><option value="" disabled={Boolean(label?.category)}>Not labeled</option>{categories.map((category) => <option key={category}>{category}</option>)}</select></div><div className="field"><label htmlFor="edit-priority">Priority</label><select id="edit-priority" value={draftPriority} disabled={saving} onChange={(event) => onPriority(event.target.value as Priority | "")}><option value="" disabled={Boolean(label?.priority)}>Not labeled</option>{priorities.map((priority) => <option key={priority}>{priority}</option>)}</select></div></div>
@@ -437,15 +461,31 @@ function EmailDetail({ email, label, draftCategory, draftPriority, saving, hasCh
   </>;
 }
 
-function ModelLab({ confirmedCount, demo, exportDisabled, onReview, onExport }: { confirmedCount: number | null; demo: boolean; exportDisabled: boolean; onReview: () => void; onExport: () => void }) {
-  const abbreviations = ["Rec", "Lnk", "Per", "Txn", "Nws", "Pro", "Spm", "Oth"];
+function ModelLab({ status, error, onRetry, confirmedCount, exportDisabled, onReview, onExport }: { status: ModelStatus | null; error: string; onRetry: () => void; confirmedCount: number | null; exportDisabled: boolean; onReview: () => void; onExport: () => void }) {
+  const evaluation = status?.evaluation;
+  const matrixCategories = evaluation ? status.supportedCategories : categories;
+  const percent = (value: number | undefined) => value === undefined ? "—" : `${(value * 100).toFixed(1)}%`;
+  const title = error ? "Model status unavailable" : !status ? "Loading model status…" : {
+    ready: "Active category model", unconfigured: "No evaluated model is active",
+    invalid: "Selected model unavailable", demo: "Demo predictions are illustrative",
+  }[status.state];
+  const description = error || (!status ? "Checking the local backend." : status.state === "ready" ?
+    "This evaluated local model classifies new mail and retries missing predictions during sync." : status.state === "invalid" ?
+    "The selected artifact is missing, corrupt, or incompatible. Check the trusted local run and restart the backend. Stored mail and priority rules remain available." : status.state === "demo" ?
+    "Synthetic predictions demonstrate the inbox. They are not an evaluated active model." :
+    "Train from confirmed category labels, inspect the saved evaluation, then select the approved run in backend configuration and restart. Priority-only labels are retained separately.");
   return <section className="view" aria-labelledby="models-title">
     <header className="page-heading"><div className="page-heading-copy model-intro"><p className="eyebrow">Explainable baseline</p><h1 id="models-title">Model lab</h1><p>Keep every model version accountable before it classifies new mail.</p></div></header>
-    <section className="model-status" aria-labelledby="model-status-title"><div className="model-status-copy"><div className="model-status-icon"><Icon name="model" /></div><div><h2 id="model-status-title">No evaluated model is active</h2><p>Training and model activation are planned for later milestones. Human category labels are available to local training; priority-only labels are retained separately.</p><div className="model-count"><strong>{confirmedCount ?? "—"}</strong><span>confirmed labels available for export</span></div></div></div><div className="model-status-actions"><button className="btn btn-secondary" type="button" onClick={onReview}>Review labels</button><button className="btn btn-primary" type="button" onClick={onExport} disabled={exportDisabled}>Export confirmed labels</button></div></section>
-    <div className="model-grid"><section className="panel model-panel" aria-labelledby="metrics-title"><div className="model-panel-head"><h2 id="metrics-title">Held-out evaluation</h2><p>Report per-class precision, recall, and F1 before a model is used.</p></div><div className="macro-card"><span>Macro F1</span><strong aria-label="Not available">—</strong></div><table className="metrics-table"><caption className="sr-only">Per-class evaluation metrics are unavailable until a held-out run exists.</caption><thead><tr><th>Category</th><th>Precision</th><th>Recall</th><th>F1</th></tr></thead><tbody>{categories.map((category) => <tr key={category}><th scope="row">{category}</th><td>—</td><td>—</td><td>—</td></tr>)}</tbody></table><p className="table-note">No held-out run yet. Values appear after training and evaluation on labeled data.</p></section>
-      <section className="panel model-panel" aria-labelledby="matrix-title"><div className="model-panel-head"><h2 id="matrix-title">Confusion matrix</h2><p>Actual labels by predicted labels.</p></div><p className="matrix-note">No evaluation has been run. Empty cells stay blank instead of implying zero errors.</p><div className="matrix-wrap"><table className="matrix-table"><caption className="sr-only">Confusion matrix has no values because no held-out evaluation exists.</caption><thead><tr><th>Actual / Pred.</th>{abbreviations.map((item, index) => <th key={item} title={categories[index]}>{item}</th>)}</tr></thead><tbody>{categories.map((category) => <tr key={category}><th scope="row" title={category}>{category}</th>{abbreviations.map((item) => <td key={item}>—</td>)}</tr>)}</tbody></table></div></section></div>
-    <section className="workflow-steps" aria-label="Training workflow"><article className="workflow-step"><span className="step-index">1</span><strong>Build the label set</strong><p>Review stored messages; confirmed corrections stay separate from original predictions.</p></article><article className="workflow-step"><span className="step-index">2</span><strong>Evaluate offline</strong><p>Hold out examples and review per-category performance before activation.</p></article><article className="workflow-step"><span className="step-index">3</span><strong>Activate with care</strong><p>Use a model only after its evaluation and artifact have been saved locally.</p></article></section>
-    <p className="threshold-note">{demo ? "Demo predictions are illustrative. " : ""}Email content and labels stay local; no remote model is used.</p>
+    <section className="model-status" aria-labelledby="model-status-title"><div className="model-status-copy"><div className="model-status-icon"><Icon name="model" /></div><div><h2 id="model-status-title">{title}</h2><p role="status">{description}</p>
+      {status?.state === "ready" && <><p>Version: {status.modelVersion}</p><p>Supported categories: {status.supportedCategories.join(", ")}</p><p>{status.reviewThreshold === null ? "All unconfirmed category predictions need review." : `Review cutoff: ${confidenceText(status.reviewThreshold)}. Confidence equal to the cutoff is accepted.`} {status.thresholdOverridden ? "Backend configuration overrides saved model cutoffs." : "Saved cutoffs remain attached to earlier predictions."}</p></>}
+      <div className="model-count"><strong>{confirmedCount ?? "—"}</strong><span>confirmed labels available for export</span></div></div></div><div className="model-status-actions">{error && <button className="btn btn-secondary" type="button" onClick={onRetry}>Retry model status</button>}<button className="btn btn-secondary" type="button" onClick={onReview}>Review labels</button><button className="btn btn-primary" type="button" onClick={onExport} disabled={exportDisabled}>Export confirmed labels</button></div></section>
+    <div className="model-grid"><section className="panel model-panel" aria-labelledby="metrics-title"><div className="model-panel-head"><h2 id="metrics-title">Held-out evaluation</h2><p>Saved test results for the active model; probabilities are uncalibrated.</p></div><div className="macro-card"><span>Macro F1</span><strong aria-label={evaluation ? undefined : "Not available"}>{percent(evaluation?.macroF1)}</strong></div><table className="metrics-table"><caption className="sr-only">{evaluation ? "Per-class held-out metrics for the active model." : "No active held-out metrics are available."}</caption><thead><tr><th>Category</th><th>Precision</th><th>Recall</th><th>F1</th></tr></thead><tbody>{categories.map((category) => {
+      const metric = evaluation?.perClass.find((row) => row.category === category);
+      return <tr key={category}><th scope="row">{category}</th><td>{percent(metric?.precision)}</td><td>{percent(metric?.recall)}</td><td>{percent(metric?.f1)}</td></tr>;
+    })}</tbody></table><p className="table-note">{evaluation ? "Excluded categories have no scores. Small held-out samples do not guarantee future performance." : "Activate an evaluated local model to display its saved metrics."}</p></section>
+      <section className="panel model-panel" aria-labelledby="matrix-title"><div className="model-panel-head"><h2 id="matrix-title">Confusion matrix</h2><p>Actual labels by predicted labels.</p></div><p className="matrix-note">{evaluation ? "Saved class ordering is used for both axes." : "No active evaluation is available. Empty cells do not imply zero errors."}</p><div className="matrix-wrap"><table className="matrix-table"><caption className="sr-only">{evaluation ? "Held-out confusion matrix in saved class order." : "Confusion matrix values are unavailable."}</caption><thead><tr><th>Actual / Pred.</th>{matrixCategories.map((category) => <th key={category} title={category}>{category.slice(0, 3)}</th>)}</tr></thead><tbody>{matrixCategories.map((category, row) => <tr key={category}><th scope="row" title={category}>{category}</th>{matrixCategories.map((column, index) => <td key={column}>{evaluation?.confusionMatrix[row][index] ?? "—"}</td>)}</tr>)}</tbody></table></div></section></div>
+    <section className="workflow-steps" aria-label="Training workflow"><article className="workflow-step"><span className="step-index">1</span><strong>Build the label set</strong><p>Review stored messages; confirmed corrections stay separate from original predictions. Category training uses human category labels only.</p></article><article className="workflow-step"><span className="step-index">2</span><strong>Evaluate offline</strong><p>Run <code>uv run python -m app.train</code> locally and inspect the saved evaluation before approving a replacement.</p></article><article className="workflow-step"><span className="step-index">3</span><strong>Activate with care</strong><p>Select the approved run in backend configuration and restart. Training never activates a model automatically.</p></article></section>
+    <p className="threshold-note">{status?.state === "demo" ? "Demo predictions are illustrative. " : ""}Email content and labels stay local; no remote model is used. English and Indonesian text rules assign priority independently.</p>
   </section>;
 }
 

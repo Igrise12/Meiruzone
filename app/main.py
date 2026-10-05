@@ -122,6 +122,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 repository.seed_demo(demo_emails())
         except (OSError, sqlite3.Error, ValueError):
             raise RuntimeError("Local storage could not be initialized.") from None
+        application.state.inbox.initialize_model()
         yield
 
     application = FastAPI(

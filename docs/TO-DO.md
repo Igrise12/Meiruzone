@@ -7,7 +7,7 @@
 
 This checklist changes the delivery order to **frontend first**, using the frontend handed over from **Open Design** as the design and implementation base. Build and review the frontend with synthetic data before connecting the backend. The product scope and local-first requirements in the referenced documents still apply.
 
-Tasks 1–5 are complete. Task 2 brought forward the initial SQLite storage foundation; task 3 adds safe IMAP ingestion and real sync bookkeeping, and task 5 adds explicit category training/evaluation with private versioned artifacts. The remaining later milestones are pending. Mark a task complete only when its deliverable and relevant checks are complete.
+Tasks 1–6 are complete. Task 2 brought forward the initial SQLite storage foundation; task 3 adds safe IMAP ingestion and real sync bookkeeping, task 5 adds explicit category training/evaluation with private versioned artifacts, and task 6 connects approved inference, bilingual priority rules, persisted cutoffs/errors, and deliberate feedback. The remaining later milestones are pending. Mark a task complete only when its deliverable and relevant checks are complete.
 
 ## 1. Frontend first: receive and integrate the Open Design handover
 
@@ -121,16 +121,18 @@ Tasks 1–5 are complete. Task 2 brought forward the initial SQLite storage foun
 
 ## 6. Add inference, priority, and the feedback loop
 
-- [ ] Load the approved category model in the backend and classify newly ingested messages locally.
-- [ ] Assign High, Medium, or Low priority independently using documented simple rules or a separate baseline model.
-- [ ] Persist category, confidence, priority, prediction time, and model version; expose them through the API.
-- [ ] Apply the configured Needs Review threshold and display missing-model or inference-failure states without preventing inbox access.
-- [ ] Keep user corrections authoritative in the UI and eligible for subsequent training; do not overwrite them during sync or inference.
-- [ ] Provide an explicit local retraining command/workflow using accumulated labels; evaluate a replacement model before activating it.
-- [ ] Test ingestion-to-prediction, confidence boundaries, independent priority logic, missing/corrupt artifacts, and preserved corrections.
-- [ ] Verify inference makes no external AI requests and never logs raw message content.
+- [x] Load the approved category model in the backend and classify newly ingested messages locally.
+- [x] Assign High, Medium, or Low priority independently using documented simple rules or a separate baseline model.
+- [x] Persist category, confidence, priority, prediction time, and model version; expose them through the API.
+- [x] Apply the configured Needs Review threshold and display missing-model or inference-failure states without preventing inbox access.
+- [x] Keep user corrections authoritative in the UI and eligible for subsequent training; do not overwrite them during sync or inference.
+- [x] Provide an explicit local retraining command/workflow using accumulated labels; evaluate a replacement model before activating it.
+- [x] Test ingestion-to-prediction, confidence boundaries, independent priority logic, missing/corrupt artifacts, and preserved corrections.
+- [x] Verify inference makes no external AI requests and never logs raw message content.
 
 **Milestone complete when:** new emails receive predictions, uncertain items can be reviewed, and corrections feed a later deliberate training run.
+
+**Implementation and verification:** the backend loads one explicitly selected trusted run at startup; changing selection requires restart. Sync fills missing category and independent English/Indonesian priority outputs, records sanitized category failures without blocking ingestion, and preserves completed predictions and all human labels. Transactional schema version 3 adds saved cutoffs (legacy 70; null reviews all) and category errors. Explicit numeric overrides apply at read time; SQL review filters and response flags agree. Training stays read-only across versions 2/3 and never activates replacements. The local model endpoint exposes only validated aggregate metrics; Model lab displays active status and saved class ordering. All 70 backend/ML tests, 33 frontend tests, the real HTTP integration check, frontend lint/type/build checks, `uv lock --check`, and `git diff --check` passed. Checks cover saved-model inference, bilingual rules/negations, 0/100/equality/review-all/override cutoffs, corrupt/missing/incompatible artifacts, migration and inference-write rollback, correction-to-retraining and explicit replacement, retained original predictions, restart persistence, and sanitized logs/no external inference requests. TestClient checks ran outside the sandbox because its local thread portal stalled under sandbox restrictions. The synthetic preview was inspected at 1440 px and 390 px with no horizontal overflow; displayed confidence/cutoffs round to one decimal while review uses full precision. No personal mailbox, database, or model was accessed. Packaging/CI and full MVP acceptance remain tasks 7–8.
 
 ## 7. Add repeatable delivery and continuous integration
 

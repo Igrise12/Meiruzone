@@ -361,7 +361,7 @@ class ApiTests(unittest.TestCase):
         with patch.dict("os.environ", {"MEIRUZONE_IMAP_PASSWORD": "private-password"}):
             schema = self.client.get("/openapi.json").json()
         paths = schema["paths"]
-        self.assertEqual(len(paths), 5)
+        self.assertEqual(len(paths), 6)
         patch_operation = paths["/api/v1/emails/{email_id}/labels"]["patch"]
         self.assertTrue(any(parameter["name"] == "X-Meiruzone-Request" and parameter["required"]
                             for parameter in patch_operation["parameters"]))

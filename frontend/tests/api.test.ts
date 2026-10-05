@@ -39,6 +39,17 @@ describe("HTTP inbox adapter", () => {
     transport.mockImplementation(async () => new Response("private proxy error", { status: 502 }));
     await expect(api.listEmails()).rejects.toBeInstanceOf(ApiError);
   });
+
+  it("reads model status from the local endpoint without replacing prediction metadata", async () => {
+    const status = { ...await fixtureAdapter.getModelStatus(), state: "ready", modelVersion: "approved-run" };
+    const transport = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(status)));
+    const api = createHttpAdapter(undefined, transport);
+    expect(await api.getModelStatus()).toEqual(status);
+    expect(transport.mock.calls[0][0]).toBe("http://127.0.0.1:8000/api/v1/model");
+    const email = { ...await fixtureAdapter.getEmail("m01"), prediction: { priority: "High", categoryError: "inference_failed", reviewThreshold: null } };
+    transport.mockImplementation(async () => new Response(JSON.stringify(email)));
+    expect((await api.getEmail("m01")).prediction).toEqual(email.prediction);
+  });
 });
 
 describe("confirmed label CSV", () => {

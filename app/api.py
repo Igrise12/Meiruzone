@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Header, Query, Request
 
 from .models import (
     CategoryStats, EmailDetail, EmailId, EmailPage, EmailQuery, ErrorResponse,
-    HumanLabel, LabelPatch, SyncRequest, SyncStatus,
+    HumanLabel, LabelPatch, ModelStatus, SyncRequest, SyncStatus,
 )
 from .services import InboxService
 
@@ -50,6 +50,11 @@ def category_stats(inbox: Inbox):
 @router.get("/sync", response_model=SyncStatus)
 def sync_status(inbox: Inbox):
     return inbox.sync_status()
+
+
+@router.get("/model", response_model=ModelStatus)
+def model_status(inbox: Inbox):
+    return inbox.model_status()
 
 
 @router.post("/sync", response_model=SyncStatus, dependencies=[Depends(write_marker)])

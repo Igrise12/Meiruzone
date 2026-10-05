@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App";
-import { ApiError, fixtureAdapter, type EmailDetail, type InboxAdapter, type SyncStatus } from "../src/api";
+import { ApiError, fixtureAdapter, type EmailDetail, type InboxAdapter, type ModelStatus, type SyncStatus } from "../src/api";
 
 function adapter(overrides: Partial<InboxAdapter> = {}): InboxAdapter { return { ...fixtureAdapter, ...overrides }; }
 function show(overrides: Partial<InboxAdapter> = {}) { return render(<App adapter={adapter(overrides)} />); }
@@ -211,5 +211,55 @@ describe("Smart Inbox", () => {
     show({ getCategoryStats: async () => { throw new Error("offline"); } }); await ready();
     expect(await screen.findByRole("button", { name: "Retry category counts" })).toBeInTheDocument();
     expect(screen.getByText("18 messages", { selector: "#result-count" })).toBeInTheDocument();
+  });
+
+  it("shows active saved metrics and the confusion matrix in model class order", async () => {
+    const status: ModelStatus = {
+      state: "ready", modelVersion: "approved-local-run", supportedCategories: ["Spam", "Recruitment"],
+      reviewThreshold: null, thresholdOverridden: false,
+      evaluation: { macroF1: 0.73, perClass: [
+        { category: "Spam", precision: 0.9, recall: 0.4, f1: 0.55 },
+        { category: "Recruitment", precision: 0.2, recall: 0.8, f1: 0.32 },
+      ], confusionMatrix: [[11, 12], [21, 22]] },
+    };
+    show({ getModelStatus: async () => status }); await ready();
+    fireEvent.click(screen.getByRole("button", { name: "Model lab" }));
+    expect(await screen.findByRole("heading", { name: "Active category model" })).toBeInTheDocument();
+    expect(screen.getByText("Version: approved-local-run")).toBeInTheDocument();
+    expect(screen.getByText(/All unconfirmed category predictions need review/)).toBeInTheDocument();
+    expect(screen.getByText("73.0%")).toBeInTheDocument();
+    const matrix = screen.getByRole("table", { name: "Held-out confusion matrix in saved class order." });
+    const rows = within(matrix).getAllByRole("row");
+    expect(rows[1]).toHaveTextContent("Spam1112");
+    expect(rows[2]).toHaveTextContent("Recruitment2122");
+    const metrics = screen.getByRole("table", { name: "Per-class held-out metrics for the active model." });
+    expect(within(metrics).getByRole("row", { name: "Personal — — —" })).toBeInTheDocument();
+  });
+
+  it("keeps review and labeling available for invalid models and failed predictions", async () => {
+    show({ getModelStatus: async () => ({ ...await fixtureAdapter.getModelStatus(), state: "invalid" }),
+      getEmail: async (id) => ({ ...await fixtureAdapter.getEmail(id), prediction: {
+        category: null, confidence: null, priority: "High", categoryError: "inference_failed",
+        reasonPriority: "Urgency phrase matched.", reviewThreshold: null,
+      } }),
+    }); await ready();
+    expect(await screen.findByText(/The selected category model could not be loaded/)).toBeInTheDocument();
+    expect(await detail().findByText(/Category prediction failed/)).toBeInTheDocument();
+    expect(detail().getByText("High priority")).toBeInTheDocument();
+    expect(detail().getByText("Urgency phrase matched.")).toBeInTheDocument();
+    fireEvent.change(detail().getByLabelText("Category"), { target: { value: "Personal" } });
+    expect(screen.getByRole("button", { name: "Confirm labels" })).toBeEnabled();
+  });
+
+  it("retries model status independently of inbox access", async () => {
+    const getModelStatus = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue({
+      state: "unconfigured", modelVersion: null, supportedCategories: [], reviewThreshold: null,
+      thresholdOverridden: false, evaluation: null,
+    });
+    show({ getModelStatus }); await ready();
+    fireEvent.click(screen.getByRole("button", { name: "Model lab" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry model status" }));
+    expect(await screen.findByRole("heading", { name: "No evaluated model is active" })).toBeInTheDocument();
+    expect(getModelStatus).toHaveBeenCalledTimes(2);
   });
 });
