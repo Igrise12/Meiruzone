@@ -8,6 +8,7 @@ __pycache__/
 # Distribution / packaging
 .Python
 env/
+node_modules/
 build/
 develop-eggs/
 dist/
@@ -58,10 +59,35 @@ target/
 
 # DotEnv configuration
 .env
+.env.*
+!.env.example
 
 # Database
 *.db
 *.rdb
+*.sqlite
+*.sqlite3
+*.db-*
+*.sqlite-*
+*.sqlite3-*
+
+# Private local emails, datasets, backups, and model artifacts
+/data/
+/datasets/
+/backups/
+/models/
+*.eml
+*.mbox
+*.joblib
+*.pkl
+*.pickle
+*.onnx
+*.safetensors
+
+# Generated frontend / Python tooling files
+*.tsbuildinfo
+.pytest_cache/
+.ruff_cache/
 
 # Pycharm
 .idea
