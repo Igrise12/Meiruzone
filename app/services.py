@@ -1,11 +1,16 @@
 """Inbox use cases, independent of HTTP transport."""
 
+import sqlite3
+from datetime import UTC, datetime
+
 from .config import Settings
 from .database import Repository
+from .imap import ERROR_MESSAGES, SyncFailure, fetch_message, message_uids, open_mailbox
 from .models import (
     CATEGORIES, CategoryStat, CategoryStats, EmailPage, EmailQuery, EmailSummary,
-    LabelPatch, SyncStatus,
+    LabelPatch, SyncRequest, SyncStatus,
 )
+from .parser import MessageSkipped
 
 
 class ApiError(Exception):
@@ -51,14 +56,46 @@ class InboxService:
             for category in (*CATEGORIES, "Unclassified")
         ])
 
-    def sync_status(self) -> SyncStatus:
+    def sync_status(self, outcome: dict | None = None) -> SyncStatus:
         return SyncStatus(
-            available=self.settings.demo, demo=self.settings.demo,
-            **self.repository.sync_status(),
+            available=self.settings.demo or self.settings.imap_available, demo=self.settings.demo,
+            **(self.repository.sync_status() if outcome is None else outcome),
         )
 
-    def sync(self) -> SyncStatus:
-        self.repository.record_sync(self.settings.demo)
-        if not self.settings.demo:
-            raise ApiError(503, "sync_unavailable", "IMAP sync is not implemented yet.")
-        return self.sync_status()
+    def sync(self, request: SyncRequest) -> SyncStatus:
+        if not self.repository.start_sync():
+            raise ApiError(409, "sync_in_progress", "A sync is already running.")
+        if self.settings.demo:
+            return self.sync_status(self.repository.finish_sync())
+        if not self.settings.imap_available:
+            self.repository.finish_sync("sync_unavailable", unavailable=True)
+            raise ApiError(503, "sync_unavailable", "Configure IMAP credentials locally to enable sync.")
+        error_code = None
+        fallback_date = datetime.now(UTC)
+        try:
+            with open_mailbox(self.settings) as (client, uid_validity):
+                mailbox_id = self.repository.ensure_mailbox(
+                    self.settings.imap_account_key, self.settings.imap_mailbox, uid_validity,
+                )
+                if mailbox_id is None:
+                    raise SyncFailure("imap_uidvalidity_changed")
+                uids = message_uids(client, request)
+                self.repository.set_sync_total(len(uids))
+                for uid in uids:
+                    try:
+                        email = fetch_message(client, uid, fallback_date)
+                    except MessageSkipped:
+                        self.repository.record_skip()
+                    else:
+                        self.repository.store_message(mailbox_id, uid_validity, uid, email)
+        except SyncFailure as error:
+            error_code = error.code
+        except sqlite3.Error:
+            error_code = "storage_unavailable"
+        except Exception:
+            # Never expose private exception text, including unexpected parser failures.
+            error_code = "sync_failed"
+        outcome = self.repository.finish_sync(error_code)
+        if outcome["state"] == "failed":
+            raise ApiError(503, error_code, ERROR_MESSAGES[error_code])
+        return self.sync_status(outcome)

@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document describes the MVP architecture for the local-first smart email classifier. Tasks 1 and 2 are implemented: the React fixture preview and the FastAPI/SQLite foundation. Real IMAP ingestion, frontend API integration, and ML workflows below remain design targets.
+This document describes the MVP architecture for the local-first smart email classifier. Tasks 1–3 are implemented: the React fixture preview, FastAPI/SQLite foundation, and safe IMAP ingestion. Frontend API integration and ML workflows below remain design targets.
 
 The MVP retrieves mail over IMAP, stores the minimum useful data locally, supports manual labels, trains and evaluates a traditional ML category model, assigns a basic priority, and presents the results in a React Smart Inbox backed by a FastAPI service. It does not send mail or modify the mailbox.
 
@@ -67,13 +67,15 @@ The implemented inbox, labels, category-statistics, and sync foundation use `/ap
 
 ### IMAP adapter and email parser
 
-The IMAP adapter retrieves recent or unread messages and maps provider-specific responses into an internal message representation. The parser extracts the message identifier, sender, subject, received date, read state, attachment-presence flag, and a clean plain-text body. HTML-only content is converted to text before storage or inference.
+The IMAP adapter uses IMAPClient for protocol response parsing, mailbox-name encoding, and selective MIME-part fetches. One configured account/folder is opened read-only over verified implicit TLS, with 30-second connection/read timeouts. It selects the highest matching UIDs, excluding Deleted and additionally requiring UNSEEN in unread mode. Requests default to 50 messages and are capped at 100. Retrieval uses BODY.PEEK for headers and text parts, omitting attachment payloads and full raw-message retention.
 
-Sync should be repeatable: use the provider message identifier (scoped to the account/mailbox as needed) to upsert rather than duplicate a message. Do not mark mail read, delete it, move it, or otherwise change mailbox state as part of MVP sync.
+The parser uses Python's email package and HTMLParser, with plain-text preference over HTML alternatives and no HTML execution or resource fetching. Headers/MIME headers share a 64 KiB budget and selected encoded text parts share a 1 MiB budget per message. MIME traversal stops at depth 20/100 parts. Malformed or oversized messages are skipped; missing fields have safe defaults. Received time prefers timezone-aware INTERNALDATE, then a valid aware Date header, then sync time. Read state comes from FLAGS; attachment presence includes non-body inline parts and attached messages. Library wire logging is suppressed to prevent DEBUG traces from exposing private content.
+
+Each message is identified by account/folder/UIDVALIDITY/UID and mapped to an opaque local ID. Account scope hashes host/port/username and excludes passwords. Message-ID is stored as optional internal metadata and is not unique. UIDVALIDITY changes stop sync before fetching, preserving all local records and labels. Recovery uses a separate database, as documented in the [setup guide](../README.md#sync-real-mail). Remote flag changes are refreshed only in the selected window; remote removal never deletes local records. Sync uses logout and never marks read, moves, deletes, or sends mail.
 
 ### Persistence
 
-SQLite is the initial database and requires no separate server. Task 2 brings forward minimal persistence using the standard-library `sqlite3` module and a repository boundary. SQLAlchemy and Alembic are not dependencies. The version 1 schema separates emails, current predictions, human labels, and singleton sync state. It uses foreign keys, value constraints, parameterized queries, and short transactional operations. Schema versioning uses `PRAGMA user_version`; future schema changes need transactional migrations, and unknown versions are rejected without resetting data.
+SQLite uses the standard-library `sqlite3` module and a repository boundary. Version 2 adds scoped mailbox/message identity and progress fields to version 1's emails, predictions, human labels, and singleton sync state. The numbered migration is transactional and preserves existing records and demo state. Foreign keys, value constraints, parameterized queries, and short transactions remain in use. Schema versioning uses `PRAGMA user_version`; unknown versions are rejected without resetting data.
 
 The conceptual data model is:
 
@@ -82,9 +84,10 @@ The conceptual data model is:
 | Email | Locally available inbox item | Provider message ID, sender, subject, plain-text body, received time, read state, attachment flag, sync metadata |
 | Classification | Current model output | Category, confidence, priority, model/version reference, prediction time |
 | Label / feedback | Human-provided ground truth | Category and priority labels, source (manual or correction), creation time |
-| Sync state | Incremental retrieval bookkeeping | Account/mailbox reference, cursor or last-sync time, last result |
+| Mailbox / IMAP identity | Repeatable scoped upserts | Account scope, folder, expected UIDVALIDITY, UID, local email ID, optional Message-ID |
+| Sync state | Bounded retrieval bookkeeping | Running/last outcome, timestamps, imported/processed/total/skipped, sanitized error code |
 
-The current human-label table stores independently optional category and priority plus a server timestamp and manual/correction source; it does not retain feedback history. Partial label updates preserve omitted fields and never update the prediction table. Account-scoped IMAP identity, deduplication, parsing, retention, backups, and real sync bookkeeping remain task 3 work. Avoid storing unneeded fields and treat database files and backups as sensitive user data.
+Human labels store independently optional category and priority plus a server timestamp and manual/correction source, without feedback history. Partial label updates preserve omitted fields and never update predictions. Ingestion upserts only message fields and identity, preserving both labels and predictions. Each message, identity mapping, and progress update commit atomically. Skips/failures retain previous imports for safe retry. Local mail is retained until explicit local deletion; database/backup permissions, SQLite backup, restore, and deletion procedures are in the [setup guide](../README.md#local-data-retention-backup-and-deletion).
 
 ### Classification and training
 
@@ -102,7 +105,7 @@ Persist the fitted preprocessing and estimator together as a versioned local art
 
 ### Background synchronization
 
-Start with an explicit “sync now” operation. If periodic sync is added for the MVP, use a lightweight in-process scheduler such as APScheduler, with one owner for the job and visible last-sync status. Avoid Celery, Redis, or a separate worker until measured workload or reliability requirements call for them.
+The current “sync now” operation is synchronous, with persisted progress available to concurrent GET requests. An atomic database claim rejects overlapping POST requests with 409. Successful/partial runs return 200; failures before processing return sanitized 503 errors. Startup recovers running records as interrupted without discarding commits. Run one backend process/worker per database. Periodic scheduling remains deferred.
 
 ## Main data flows
 
@@ -131,12 +134,14 @@ app/
 ├── main.py       # Composition, lifespan, access controls, sanitized errors
 ├── api.py        # Thin HTTP routes
 ├── models.py     # Domain records and request/response schemas
-├── services.py   # Inbox, labeling, aggregates, and demo sync use cases
+├── services.py   # Inbox, labeling, aggregates, and sync orchestration
 ├── database.py   # SQLite initialization and repository
 ├── config.py     # Backend environment configuration
+├── imap.py       # Verified TLS, read-only selection, selective bounded fetches
+├── parser.py     # Header decoding, normalized records, safe HTML-to-text
 └── demo.py       # Synthetic seed records
 frontend/         # React fixture preview; API integration is task 4
-tests/            # Synthetic API/config/storage checks
+tests/            # Synthetic API/config/storage/IMAP/parser checks
 data/             # Ignored local databases
 models/           # Future ignored local model artifacts
 ```
@@ -147,7 +152,7 @@ Keep private email data, account credentials, tokens, database files, and traine
 
 The MVP should run from a clean local setup with the fewest necessary processes. Docker/Compose may package the React client and FastAPI backend; SQLite remains a mounted local file. A direct development workflow is also appropriate. PostgreSQL is a later option, not an MVP dependency.
 
-Secrets come from backend process environment variables and are never committed. An ignored private `.env` may be explicitly loaded by `uv run --env-file`; `.env.example` contains safe placeholders. Mailbox credential names are reserved for task 3, and no passwords are stored in SQLite or returned by the API.
+Secrets come from backend process environment variables and are never committed. An ignored private `.env` may be explicitly loaded by `uv run --env-file`; `.env.example` contains safe placeholders. Password/app-password login is supported through backend-only IMAP settings; passwords are masked, excluded from settings serialization, and never stored in SQLite or returned by the API. OAuth and simultaneous account/folder configuration remain future work.
 
 The documented Uvicorn startup binds to `127.0.0.1:8000` with access logging disabled. Host names are limited to loopback, and browser origins to an explicit local allowlist. All writes require JSON and `X-Meiruzone-Request: 1`, with an actual 4096-byte body limit; foreign/null origins are rejected. This protects against unsolicited browser writes, not programs already running as the local user. Errors and application logs omit input values, bodies, and private exception details. See the [implemented API contract](api-contract.md) and root README for startup, configuration, and verification.
 

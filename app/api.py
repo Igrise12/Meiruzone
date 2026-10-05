@@ -1,4 +1,4 @@
-"""Thin HTTP routes. Synthetic sync never contacts a mailbox."""
+"""Thin HTTP routes for local inbox operations."""
 
 from typing import Annotated, Literal
 
@@ -21,7 +21,7 @@ def write_marker(marker: Annotated[Literal["1"], Header(alias="X-Meiruzone-Reque
 
 router = APIRouter(prefix="/api/v1", responses={
     status: {"model": ErrorResponse}
-    for status in (400, 403, 404, 405, 413, 415, 422, 500, 503)
+    for status in (400, 403, 404, 405, 409, 413, 415, 422, 500, 503)
 })
 Inbox = Annotated[InboxService, Depends(service)]
 
@@ -54,5 +54,4 @@ def sync_status(inbox: Inbox):
 
 @router.post("/sync", response_model=SyncStatus, dependencies=[Depends(write_marker)])
 def sync(sync_request: SyncRequest, inbox: Inbox):
-    # The validated bounds are reserved for IMAP; demo sync is explicitly a no-op.
-    return inbox.sync()
+    return inbox.sync(sync_request)

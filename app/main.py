@@ -117,6 +117,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(application):
         try:
             repository.initialize()
+            repository.recover_sync()
             if settings.demo:
                 repository.seed_demo(demo_emails())
         except (OSError, sqlite3.Error, ValueError):

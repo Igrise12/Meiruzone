@@ -5,8 +5,10 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from .models import EmailDetail, EmailQuery, HumanLabel, LabelPatch, Prediction
+from .parser import ParsedEmail
 
 
 SCHEMA = """
@@ -57,6 +59,48 @@ CREATE TABLE sync_state (
 );
 INSERT INTO sync_state(id, state) VALUES (1, 'idle');
 PRAGMA user_version = 1;
+COMMIT;
+"""
+
+MIGRATION_2 = """
+BEGIN IMMEDIATE;
+CREATE TABLE mailboxes (
+    id TEXT PRIMARY KEY,
+    account_key TEXT NOT NULL,
+    name TEXT NOT NULL,
+    uid_validity INTEGER NOT NULL CHECK (uid_validity BETWEEN 1 AND 4294967295),
+    UNIQUE(account_key, name),
+    UNIQUE(id, uid_validity)
+);
+CREATE TABLE imap_messages (
+    mailbox_id TEXT NOT NULL,
+    uid_validity INTEGER NOT NULL,
+    uid INTEGER NOT NULL CHECK (uid BETWEEN 1 AND 4294967295),
+    email_id TEXT NOT NULL UNIQUE REFERENCES emails(id) ON DELETE CASCADE,
+    message_id TEXT,
+    PRIMARY KEY(mailbox_id, uid_validity, uid),
+    FOREIGN KEY(mailbox_id, uid_validity) REFERENCES mailboxes(id, uid_validity)
+);
+ALTER TABLE sync_state RENAME TO sync_state_v1;
+CREATE TABLE sync_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    state TEXT NOT NULL CHECK (state IN (
+        'idle', 'running', 'succeeded', 'partial', 'failed', 'unavailable'
+    )),
+    started_at TEXT,
+    completed_at TEXT,
+    imported INTEGER NOT NULL DEFAULT 0 CHECK (imported >= 0),
+    error_code TEXT,
+    demo_seeded INTEGER NOT NULL DEFAULT 0 CHECK (demo_seeded IN (0, 1)),
+    processed INTEGER NOT NULL DEFAULT 0 CHECK (processed >= 0),
+    total INTEGER NOT NULL DEFAULT 0 CHECK (total >= 0),
+    skipped INTEGER NOT NULL DEFAULT 0 CHECK (skipped >= 0)
+);
+INSERT INTO sync_state(id, state, started_at, completed_at, imported, error_code, demo_seeded)
+    SELECT id, state, started_at, completed_at, imported, error_code, demo_seeded
+    FROM sync_state_v1;
+DROP TABLE sync_state_v1;
+PRAGMA user_version = 2;
 COMMIT;
 """
 
@@ -112,8 +156,20 @@ class Repository:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if version == 0:
                 connection.executescript(SCHEMA)
-            elif version != 1:
+                version = 1
+            if version == 1:
+                connection.executescript(MIGRATION_2)
+            elif version != 2:
                 raise ValueError("Unsupported local database schema version.")
+
+    def recover_sync(self) -> None:
+        """One backend process owns this database; a running record is interrupted."""
+        with self.connect() as connection:
+            connection.execute(
+                """UPDATE sync_state SET state = CASE WHEN processed > 0 THEN 'partial' ELSE 'failed' END,
+                completed_at = ?, error_code = 'sync_interrupted' WHERE state = 'running'""",
+                (utc_text(datetime.now(UTC)),),
+            )
 
     def seed_demo(self, emails: list[EmailDetail]) -> None:
         with self.connect() as connection:
@@ -235,16 +291,92 @@ class Repository:
     def sync_status(self) -> dict:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT state, started_at, completed_at, imported, error_code FROM sync_state WHERE id = 1",
+                """SELECT state, started_at, completed_at, imported, error_code,
+                processed, total, skipped FROM sync_state WHERE id = 1""",
             ).fetchone()
         return dict(row)
 
-    def record_sync(self, demo: bool) -> None:
-        now = utc_text(datetime.now(UTC))
+    def start_sync(self) -> bool:
+        with self.connect() as connection:
+            # The short write transaction also serializes overlapping HTTP requests.
+            connection.execute("BEGIN IMMEDIATE")
+            result = connection.execute(
+                """UPDATE sync_state SET state = 'running', started_at = ?, completed_at = NULL,
+                imported = 0, processed = 0, total = 0, skipped = 0, error_code = NULL
+                WHERE id = 1 AND state != 'running'""", (utc_text(datetime.now(UTC)),),
+            )
+            return bool(result.rowcount)
+
+    def ensure_mailbox(self, account_key: str, name: str, uid_validity: int) -> str | None:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT id, uid_validity FROM mailboxes WHERE account_key = ? AND name = ?",
+                (account_key, name),
+            ).fetchone()
+            if row is not None:
+                return row["id"] if row["uid_validity"] == uid_validity else None
+            mailbox_id = uuid4().hex
+            connection.execute("INSERT INTO mailboxes VALUES (?, ?, ?, ?)",
+                               (mailbox_id, account_key, name, uid_validity))
+            return mailbox_id
+
+    def set_sync_total(self, total: int) -> None:
+        with self.connect() as connection:
+            connection.execute("UPDATE sync_state SET total = ? WHERE id = 1", (total,))
+
+    def store_message(self, mailbox_id: str, uid_validity: int, uid: int, email: ParsedEmail) -> None:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT email_id FROM imap_messages WHERE mailbox_id = ? AND uid_validity = ? AND uid = ?",
+                (mailbox_id, uid_validity, uid),
+            ).fetchone()
+            email_id = row["email_id"] if row else uuid4().hex
+            connection.execute(
+                """INSERT INTO emails VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET sender = excluded.sender, address = excluded.address,
+                subject = excluded.subject, body = excluded.body, received_at = excluded.received_at,
+                is_read = excluded.is_read, has_attachments = excluded.has_attachments""",
+                (email_id, email.sender, email.address, email.subject, email.body,
+                 utc_text(email.received_at), email.read, email.has_attachments),
+            )
+            connection.execute(
+                """INSERT INTO imap_messages VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(mailbox_id, uid_validity, uid) DO UPDATE SET message_id = excluded.message_id""",
+                (mailbox_id, uid_validity, uid, email_id, email.message_id),
+            )
+            # Ingestion only writes emails/identity; labels and predictions remain authoritative.
+            connection.execute(
+                "UPDATE sync_state SET processed = processed + 1, imported = imported + ? WHERE id = 1",
+                (int(row is None),),
+            )
+
+    def record_skip(self) -> None:
         with self.connect() as connection:
             connection.execute(
-                """UPDATE sync_state SET state = ?, started_at = ?, completed_at = ?,
-                imported = 0, error_code = ? WHERE id = 1""",
-                ("succeeded" if demo else "unavailable", now, now,
-                 None if demo else "sync_unavailable"),
+                "UPDATE sync_state SET processed = processed + 1, skipped = skipped + 1 WHERE id = 1",
             )
+
+    def finish_sync(self, error_code: str | None = None, *, unavailable: bool = False) -> dict:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT processed, skipped FROM sync_state WHERE id = 1").fetchone()
+            if unavailable:
+                state = "unavailable"
+            elif error_code and not row["processed"]:
+                state = "failed"
+            elif error_code or row["skipped"]:
+                state = "partial"
+                error_code = error_code or "imap_message_skipped"
+            else:
+                state = "succeeded"
+            connection.execute(
+                "UPDATE sync_state SET state = ?, completed_at = ?, error_code = ? WHERE id = 1",
+                (state, utc_text(datetime.now(UTC)), error_code),
+            )
+            # Capture this run before another request can claim/reset the singleton status.
+            return dict(connection.execute(
+                """SELECT state, started_at, completed_at, imported, error_code,
+                processed, total, skipped FROM sync_state WHERE id = 1""",
+            ).fetchone())

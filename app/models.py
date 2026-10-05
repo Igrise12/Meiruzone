@@ -111,10 +111,13 @@ class SyncRequest(WireModel):
 class SyncStatus(WireModel):
     available: bool
     demo: bool
-    state: Literal["idle", "succeeded", "unavailable"]
+    state: Literal["idle", "running", "succeeded", "partial", "failed", "unavailable"]
     started_at: AwareDatetime | None = None
     completed_at: AwareDatetime | None = None
     imported: int = 0
+    processed: int = 0
+    total: int = 0
+    skipped: int = 0
     error_code: str | None = None
 
 

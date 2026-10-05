@@ -7,7 +7,7 @@
 
 This checklist changes the delivery order to **frontend first**, using the frontend handed over from **Open Design** as the design and implementation base. Build and review the frontend with synthetic data before connecting the backend. The product scope and local-first requirements in the referenced documents still apply.
 
-Tasks 1 and 2 are complete. Task 2 also brings forward the initial SQLite storage foundation from task 3; the remaining later milestones are pending. Mark a task complete only when its deliverable and relevant checks are complete.
+Tasks 1–3 are complete. Task 2 brought forward the initial SQLite storage foundation; task 3 adds safe IMAP ingestion and real sync bookkeeping. The remaining later milestones are pending. Mark a task complete only when its deliverable and relevant checks are complete.
 
 ## 1. Frontend first: receive and integrate the Open Design handover
 
@@ -68,22 +68,24 @@ Tasks 1 and 2 are complete. Task 2 also brings forward the initial SQLite storag
 
 ## 3. Implement local storage and safe IMAP ingestion
 
-- [x] Create SQLite storage for emails, classifications, human labels/feedback, and sync state; choose the simplest suitable persistence and migration approach. Initial storage was brought forward into task 2 using `sqlite3`, current human labels, and `PRAGMA user_version`; account-scoped ingestion and real sync bookkeeping remain below.
-- [ ] Preserve model predictions separately from human corrections so inference cannot overwrite training labels.
-- [ ] Define deduplication using stable IMAP identifiers, including account/mailbox scope and handling UID validity changes.
-- [ ] Implement IMAP connectivity over verified TLS, with timeouts, bounded fetches, and useful sanitized connection errors.
-- [ ] Fetch recent or unread mail without changing its read state or other mailbox flags; use read-only access and non-marking fetches.
-- [ ] Parse sender, subject, clean plain-text body, received date, read state, message identifiers, and attachment presence.
-- [ ] Convert HTML-only messages to text without executing HTML or fetching external resources; handle encodings, missing fields, and malformed MIME.
-- [ ] Store only required fields; omit attachment downloads and full raw-message retention from the initial workflow.
-- [ ] Implement repeatable upserts, sync progress/outcome, and safe retry after partial failures.
-- [ ] Define local data retention/deletion and backup guidance, including protection of database files and backups.
-- [ ] Test parsing with plain text, HTML, multipart content, malformed headers, missing fields, large messages, and attachments.
-- [ ] Test deduplication, repeated sync, interrupted retrieval, database transactions, and retained human labels.
-- [ ] Verify with mocked IMAP commands that sync never marks read, moves, deletes, or sends mail; keep automated tests independent of personal accounts.
-- [ ] Audit error and debug logs to confirm they omit credentials, tokens, full email bodies, and unnecessary personal metadata.
+- [x] Create SQLite storage for emails, classifications, human labels/feedback, and sync state; choose the simplest suitable persistence and migration approach. Task 2 introduced `sqlite3`, current human labels, and `PRAGMA user_version`; task 3 adds a transactional version 2 migration for scoped IMAP identity and real sync progress.
+- [x] Preserve model predictions separately from human corrections so inference cannot overwrite training labels.
+- [x] Define deduplication using stable IMAP identifiers, including account/mailbox scope and handling UID validity changes.
+- [x] Implement IMAP connectivity over verified TLS, with timeouts, bounded fetches, and useful sanitized connection errors.
+- [x] Fetch recent or unread mail without changing its read state or other mailbox flags; use read-only access and non-marking fetches.
+- [x] Parse sender, subject, clean plain-text body, received date, read state, message identifiers, and attachment presence.
+- [x] Convert HTML-only messages to text without executing HTML or fetching external resources; handle encodings, missing fields, and malformed MIME.
+- [x] Store only required fields; omit attachment downloads and full raw-message retention from the initial workflow.
+- [x] Implement repeatable upserts, sync progress/outcome, and safe retry after partial failures.
+- [x] Define local data retention/deletion and backup guidance, including protection of database files and backups.
+- [x] Test parsing with plain text, HTML, multipart content, malformed headers, missing fields, large messages, and attachments.
+- [x] Test deduplication, repeated sync, interrupted retrieval, database transactions, and retained human labels.
+- [x] Verify with mocked IMAP commands that sync never marks read, moves, deletes, or sends mail; keep automated tests independent of personal accounts.
+- [x] Audit error and debug logs to confirm they omit credentials, tokens, full email bodies, and unnecessary personal metadata.
 
 **Milestone complete when:** a bounded IMAP sync stores useful local messages, repeat sync does not duplicate them, and mailbox state remains unchanged.
+
+**Implementation and verification:** IMAPClient performs verified-TLS, read-only sync for one configured account/folder using password/app-password login. Retrieval selects the highest matching UIDs and fetches bounded headers/text parts without attachment payloads. Separate identity mappings, per-message transactions, persisted progress, partial retry, overlap rejection, and interrupted-run recovery preserve predictions and human labels. UIDVALIDITY changes stop sync and preserve the existing database; recovery uses a separate file. All 50 backend tests, `uv lock --check`, `git diff --check`, a real loopback Uvicorn smoke, and the documented backup/restore procedure passed with isolated synthetic data. Parsing, command safety, TLS/timeouts, deduplication, migration rollback, progress races, and sanitized DEBUG logs are covered. No personal mailbox was contacted. Frontend API integration and ML remain tasks 4–6.
 
 ## 4. Connect the frontend and build the labeled dataset
 

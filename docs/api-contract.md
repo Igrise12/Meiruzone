@@ -3,8 +3,8 @@
 The backend runs at `http://127.0.0.1:8000`. `GET /openapi.json` exposes the
 executable schemas. Interactive documentation is disabled to avoid loading
 external assets. Application endpoints use `/api/v1` and return JSON.
-SQLite persistence is implemented; IMAP retrieval and frontend integration
-remain later milestones.
+SQLite persistence and safe IMAP retrieval are implemented; frontend integration
+remains task 4.
 
 ## Shared values
 
@@ -15,7 +15,7 @@ remain later milestones.
   human category and no predicted category. Other is a real category.
 - IDs are stable opaque ASCII tokens matching `[A-Za-z0-9_-]{1,128}`. Clients
   must not derive mailbox identifiers from them. Demo IDs are `demo-01`
-  through `demo-10`; future ingestion must assign IDs independently of IMAP UIDs.
+  through `demo-10`; ingestion assigns UUID-based IDs independently of IMAP UIDs.
 - Dates are timezone-aware ISO 8601 strings serialized in UTC with `Z`.
   `receivedAt` is a timestamp that the frontend formats for display.
 - Category confidence is a number from 0 through 100, including fractional
@@ -143,7 +143,7 @@ rounded up, so their sum can differ from 100. Counts sum exactly to total.
 An empty dataset returns total 0 and nine zero-count/percentage entries.
 Refresh statistics after saves, sync, and future prediction updates.
 
-## Sync foundation
+## Sync
 
 `GET /api/v1/sync` reports availability and the last request outcome:
 
@@ -155,14 +155,36 @@ Refresh statistics after saves, sync, and future prediction updates.
   "startedAt": null,
   "completedAt": null,
   "imported": 0,
+  "processed": 0,
+  "total": 0,
+  "skipped": 0,
   "errorCode": null
 }
 ```
 
-Available/demo reflect the current configuration. State is idle before any
-request, succeeded after demo sync, or unavailable after an IMAP request.
-The last outcome and timestamps persist across restarts, including when
-availability changes.
+Available/demo reflect current configuration. Available means explicit demo mode
+or a configured IMAP host, username, and nonempty password; it does not assert
+connectivity. Status contains no account, folder, or credentials. The last
+outcome and timestamps persist across restarts, including when availability
+changes. One backend process/worker owns each database.
+
+| State | Meaning |
+| --- | --- |
+| idle | No sync has been requested |
+| running | Current sync; completedAt is null |
+| succeeded | Entire selected window processed without skips, including empty/demo sync |
+| partial | One or more skips, or a failure after some messages were processed |
+| failed | Failure before any message was processed |
+| unavailable | Required IMAP configuration is incomplete |
+
+All counters reset at the start of a run. `total` is the selected UID count
+(0 until selection finishes). `processed` counts committed stores, including
+updates of existing rows, plus skipped messages. `imported` counts newly
+inserted rows only; `skipped` counts unusable or disappeared messages.
+During an interrupted run, processed can be less than total. Each successful
+message, its scoped identity, and progress counters commit together. Startup
+recovers running as partial/failed with errorCode `sync_interrupted`, preserving
+committed data and counters.
 
 `POST /api/v1/sync` requires a JSON object:
 
@@ -174,11 +196,45 @@ Mode is recent or unread, default recent. Limit is a JSON integer from 1–100,
 default 50; strings, fractions, and booleans are rejected. An empty object
 uses defaults. Account, host, credentials, and mailbox are not request fields.
 
-In explicit demo mode, return 200 with the status shape above, state succeeded,
-demo true, timestamps, and imported 0. This is a no-op: no mailbox contact,
-reseeding, or message flag changes. Otherwise, record an unavailable outcome
-and return 503 with code sync_unavailable. Configured IMAP credentials do not
-enable real sync yet. No scheduler or background worker is introduced.
+In explicit demo mode, return 200, state succeeded, demo true, timestamps,
+and zero counters. This is a no-op with no mailbox contact or reseeding.
+Incomplete configuration records unavailable and returns 503/sync_unavailable.
+
+Real sync is synchronous. It opens the configured folder read-only over
+verified TLS, searches highest UIDs excluding Deleted, and additionally requires
+UNSEEN for unread mode. A request refreshes at most limit matching messages;
+there is no history/backfill cursor. Read state comes from FLAGS. Body fetches
+use BODY.PEEK and target text parts, with a combined 64 KiB header budget and
+1 MiB encoded text budget per message. Attachment payloads and full raw mail
+are never retained. Message-ID is internal metadata, not the deduplication key.
+
+Deduplication uses account/folder/UIDVALIDITY/UID with independent local IDs.
+Upserts preserve predictions and human labels. Deleted or moved provider mail
+remains locally stored. A UIDVALIDITY change stops sync before message fetching
+with `imap_uidvalidity_changed`; see the [recovery and backup instructions](../README.md#sync-real-mail).
+
+Return 200 with the recorded final status for succeeded/partial. Return 503
+with the standard error envelope for failed/unavailable; GET reports the saved
+outcome. A concurrent POST returns 409/sync_in_progress without resetting the
+running status. Retry uses the same bounded window and preserves prior commits.
+Partial outcomes carry the failing code, or `imap_message_skipped` for skipped
+messages. Error text never includes provider replies or private input.
+
+| Code | Meaning |
+| --- | --- |
+| sync_unavailable | Configure IMAP locally |
+| sync_in_progress | Wait for the active request |
+| imap_auth_failed | Login failed |
+| imap_tls_error | Verified TLS could not be established |
+| imap_timeout | A connection/read operation exceeded 30 seconds |
+| imap_connection_failed | Network connection failed |
+| imap_mailbox_unavailable | Configured folder could not be opened |
+| imap_protocol_error | Unsupported/missing protocol response or persistent UID identity |
+| imap_uidvalidity_changed | Folder identifiers changed; preserve the old database |
+| imap_message_skipped | Oversized, malformed, deleted, or disappeared selected message |
+| storage_unavailable | Local storage operation failed |
+| sync_failed | Sanitized unexpected sync failure |
+| sync_interrupted | Backend restarted during sync |
 
 ## Access and errors
 
@@ -220,6 +276,7 @@ Non-validation errors have an empty fields array.
 | 403 | Forbidden origin or missing write marker |
 | 404 | Unknown message / email_not_found, or unknown route |
 | 405 | Unsupported route method |
+| 409 | Sync already running / sync_in_progress |
 | 413 | Body exceeds 4096 bytes / request_too_large |
 | 415 | Write body is not JSON / json_required |
 | 422 | Invalid request / validation_error |
