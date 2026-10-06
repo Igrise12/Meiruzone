@@ -104,6 +104,16 @@ PRAGMA user_version = 2;
 COMMIT;
 """
 
+MIGRATION_3 = """
+BEGIN IMMEDIATE;
+ALTER TABLE predictions ADD COLUMN review_threshold REAL DEFAULT 70
+    CHECK (review_threshold BETWEEN 0 AND 100);
+ALTER TABLE predictions ADD COLUMN category_error TEXT
+    CHECK (category_error IN ('model_unavailable', 'inference_failed'));
+PRAGMA user_version = 3;
+COMMIT;
+"""
+
 JOIN = """
 FROM emails e
 LEFT JOIN predictions p ON p.email_id = e.id
@@ -112,13 +122,14 @@ LEFT JOIN human_labels h ON h.email_id = e.id
 SELECT_EMAIL = """
 SELECT e.*, p.email_id AS prediction_id, p.category AS prediction_category,
     p.priority AS prediction_priority, p.confidence, p.reason_category,
-    p.reason_priority, p.model_version, p.predicted_at,
+    p.reason_priority, p.model_version, p.predicted_at, p.review_threshold, p.category_error,
     h.email_id AS label_id, h.category AS label_category,
     h.priority AS label_priority, h.confirmed_at, h.source
 """ + JOIN
 EFFECTIVE_CATEGORY = "COALESCE(h.category, p.category, 'Unclassified')"
 EFFECTIVE_PRIORITY = "COALESCE(h.priority, p.priority)"
-NEEDS_REVIEW = "h.category IS NULL AND p.category IS NOT NULL AND p.confidence < ?"
+NEEDS_REVIEW = """h.category IS NULL AND p.category IS NOT NULL AND p.confidence IS NOT NULL
+    AND (COALESCE(?, p.review_threshold) IS NULL OR p.confidence < COALESCE(?, p.review_threshold))"""
 
 
 def utc_text(value: datetime) -> str:
@@ -130,8 +141,9 @@ class Repository:
         self.path = path
 
     @contextmanager
-    def connect(self):
-        connection = sqlite3.connect(self.path, timeout=5)
+    def connect(self, *, readonly: bool = False):
+        database = self.path.resolve().as_uri() + "?mode=ro" if readonly else self.path
+        connection = sqlite3.connect(database, timeout=5, uri=readonly)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.create_function(
@@ -159,7 +171,10 @@ class Repository:
                 version = 1
             if version == 1:
                 connection.executescript(MIGRATION_2)
-            elif version != 2:
+                version = 2
+            if version == 2:
+                connection.executescript(MIGRATION_3)
+            elif version != 3:
                 raise ValueError("Unsupported local database schema version.")
 
     def recover_sync(self) -> None:
@@ -186,7 +201,9 @@ class Repository:
                 if email.prediction is not None:
                     prediction = email.prediction
                     connection.execute(
-                        "INSERT INTO predictions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        """INSERT INTO predictions(email_id, category, priority, confidence,
+                        reason_category, reason_priority, model_version, predicted_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                         (email.id, prediction.category, prediction.priority,
                          prediction.confidence, prediction.reason_category,
                          prediction.reason_priority, prediction.model_version,
@@ -202,7 +219,7 @@ class Repository:
             connection.execute("UPDATE sync_state SET demo_seeded = 1 WHERE id = 1")
 
     @staticmethod
-    def email_from_row(row: sqlite3.Row, threshold: float) -> EmailDetail:
+    def email_from_row(row: sqlite3.Row, threshold: float | None) -> EmailDetail:
         prediction = None
         if row["prediction_id"] is not None:
             prediction = Prediction(
@@ -210,6 +227,8 @@ class Repository:
                 confidence=row["confidence"], reason_category=row["reason_category"],
                 reason_priority=row["reason_priority"], model_version=row["model_version"],
                 predicted_at=row["predicted_at"],
+                review_threshold=threshold if threshold is not None else row["review_threshold"],
+                category_error=row["category_error"],
             )
         label = None
         if row["label_id"] is not None:
@@ -224,11 +243,12 @@ class Repository:
             prediction=prediction, human_label=label,
             needs_review=bool(
                 prediction and prediction.category and prediction.confidence is not None
-                and prediction.confidence < threshold and (label is None or label.category is None)
+                and (prediction.review_threshold is None or prediction.confidence < prediction.review_threshold)
+                and (label is None or label.category is None)
             ),
         )
 
-    def list_emails(self, query: EmailQuery, threshold: float) -> tuple[list[EmailDetail], int]:
+    def list_emails(self, query: EmailQuery, threshold: float | None = None) -> tuple[list[EmailDetail], int]:
         conditions, parameters = [], []
         if query.category is not None:
             conditions.append(f"{EFFECTIVE_CATEGORY} = ?")
@@ -238,7 +258,9 @@ class Repository:
             parameters.append(query.priority)
         if query.needs_review:
             conditions.append(NEEDS_REVIEW)
-            parameters.append(threshold)
+            parameters.extend((threshold, threshold))
+        if query.has_human_label:
+            conditions.append("h.email_id IS NOT NULL")
         if query.q.strip():
             conditions.append(
                 "instr(casefold(e.sender || ' ' || e.address || ' ' || e.subject || ' ' || "
@@ -256,7 +278,7 @@ class Repository:
             ).fetchall()
         return [self.email_from_row(row, threshold) for row in rows], total
 
-    def get_email(self, email_id: str, threshold: float) -> EmailDetail | None:
+    def get_email(self, email_id: str, threshold: float | None = None) -> EmailDetail | None:
         with self.connect() as connection:
             row = connection.execute(SELECT_EMAIL + " WHERE e.id = ?", (email_id,)).fetchone()
         return self.email_from_row(row, threshold) if row else None
@@ -287,6 +309,19 @@ class Repository:
                 + JOIN + f" GROUP BY {EFFECTIVE_CATEGORY}",
             ).fetchall()
         return {row["category"]: row["count"] for row in rows}
+
+    def category_training_examples(self) -> list[dict]:
+        """Read human category ground truth, never unverified predictions."""
+        with self.connect(readonly=True) as connection:
+            if connection.execute("PRAGMA user_version").fetchone()[0] not in (2, 3):
+                raise ValueError("Training requires an initialized version 2 or 3 database.")
+            rows = connection.execute(
+                """SELECT e.id, e.sender, e.address, e.subject, e.body,
+                    h.category, h.priority, h.confirmed_at, h.source
+                FROM emails e JOIN human_labels h ON h.email_id = e.id
+                WHERE h.category IS NOT NULL ORDER BY e.id""",
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def sync_status(self) -> dict:
         with self.connect() as connection:
@@ -325,7 +360,17 @@ class Repository:
         with self.connect() as connection:
             connection.execute("UPDATE sync_state SET total = ? WHERE id = 1", (total,))
 
-    def store_message(self, mailbox_id: str, uid_validity: int, uid: int, email: ParsedEmail) -> None:
+    def ingested_prediction(self, mailbox_id: str, uid_validity: int, uid: int) -> Prediction | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT p.* FROM imap_messages i JOIN predictions p ON p.email_id = i.email_id
+                WHERE i.mailbox_id = ? AND i.uid_validity = ? AND i.uid = ?""",
+                (mailbox_id, uid_validity, uid),
+            ).fetchone()
+        return Prediction(**{key: row[key] for key in row.keys() if key != "email_id"}) if row else None
+
+    def store_message(self, mailbox_id: str, uid_validity: int, uid: int, email: ParsedEmail,
+                      prediction: Prediction | None = None) -> None:
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -346,7 +391,20 @@ class Repository:
                 ON CONFLICT(mailbox_id, uid_validity, uid) DO UPDATE SET message_id = excluded.message_id""",
                 (mailbox_id, uid_validity, uid, email_id, email.message_id),
             )
-            # Ingestion only writes emails/identity; labels and predictions remain authoritative.
+            if prediction is not None:
+                connection.execute(
+                    """INSERT INTO predictions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(email_id) DO UPDATE SET
+                        category = excluded.category, priority = excluded.priority,
+                        confidence = excluded.confidence, reason_category = excluded.reason_category,
+                        reason_priority = excluded.reason_priority, model_version = excluded.model_version,
+                        predicted_at = excluded.predicted_at, review_threshold = excluded.review_threshold,
+                        category_error = excluded.category_error""",
+                    (email_id, prediction.category, prediction.priority, prediction.confidence,
+                     prediction.reason_category, prediction.reason_priority, prediction.model_version,
+                     utc_text(prediction.predicted_at) if prediction.predicted_at else None,
+                     prediction.review_threshold, prediction.category_error),
+                )
             connection.execute(
                 "UPDATE sync_state SET processed = processed + 1, imported = imported + ? WHERE id = 1",
                 (int(row is None),),

@@ -7,7 +7,7 @@
 
 This checklist changes the delivery order to **frontend first**, using the frontend handed over from **Open Design** as the design and implementation base. Build and review the frontend with synthetic data before connecting the backend. The product scope and local-first requirements in the referenced documents still apply.
 
-Tasks 1–3 are complete. Task 2 brought forward the initial SQLite storage foundation; task 3 adds safe IMAP ingestion and real sync bookkeeping. The remaining later milestones are pending. Mark a task complete only when its deliverable and relevant checks are complete.
+Tasks 1–7 are complete. Task 2 brought forward the initial SQLite storage foundation; task 3 adds safe IMAP ingestion and real sync bookkeeping, task 5 adds explicit category training/evaluation with private versioned artifacts, task 6 connects approved inference, bilingual priority rules, persisted cutoffs/errors, and deliberate feedback, and task 7 adds locked CI, local Compose packaging, and release documentation. Full MVP acceptance remains task 8. Mark a task complete only when its deliverable and relevant checks are complete.
 
 ## 1. Frontend first: receive and integrate the Open Design handover
 
@@ -89,73 +89,83 @@ Tasks 1–3 are complete. Task 2 brought forward the initial SQLite storage foun
 
 ## 4. Connect the frontend and build the labeled dataset
 
-- [ ] Replace synthetic data calls with the agreed API adapter and retain fixtures for development and automated tests.
-- [ ] Connect email lists/details, filters, pagination, sync status, and dashboard treemap aggregates to SQLite-backed endpoints.
-- [ ] Compute treemap counts from existing records without adding an analytics service; count each message once and refresh after sync, labels/corrections, and new predictions.
-- [ ] Persist manual category and priority labels and prediction corrections through validated API operations.
-- [ ] Show successful saves and recoverable failures accurately; preserve user changes while retrying a failed save.
-- [ ] Make labeled messages available to local training, with a clear distinction between human labels and unverified predictions.
-- [ ] Test frontend/backend integration for filtering, labeling, correcting, refresh/restart persistence, and API failures.
-- [ ] Test treemap totals and percentages against stored messages, including human-label precedence, Unclassified messages, unchanged totals across inbox pages/filters, and refreshed category counts after correction.
-- [ ] Recheck safe rendering using ingested message content and verify secret fields never appear in API responses.
+- [x] Replace synthetic data calls with the agreed API adapter and retain fixtures for development and automated tests.
+- [x] Connect email lists/details, filters, pagination, sync status, and dashboard treemap aggregates to SQLite-backed endpoints.
+- [x] Compute treemap counts from existing records without adding an analytics service; count each message once and refresh after sync, labels/corrections, and new predictions.
+- [x] Persist manual category and priority labels and prediction corrections through validated API operations.
+- [x] Show successful saves and recoverable failures accurately; preserve user changes while retrying a failed save.
+- [x] Make labeled messages available to local training, with a clear distinction between human labels and unverified predictions.
+- [x] Test frontend/backend integration for filtering, labeling, correcting, refresh/restart persistence, and API failures.
+- [x] Test treemap totals and percentages against stored messages, including human-label precedence, Unclassified messages, unchanged totals across inbox pages/filters, and refreshed category counts after correction.
+- [x] Recheck safe rendering using ingested message content and verify secret fields never appear in API responses.
 
 **Milestone complete when:** a user can review locally ingested messages, inspect accurate dashboard category counts, and create reliable training labels from the Smart Inbox.
 
+**Implementation and verification:** the frontend now defaults to a loopback-only HTTP adapter with explicit offline fixture mode. Server filters, 50-message pagination, selected details, authoritative Needs Review, partial labels, retained drafts, persisted sync outcomes/progress, and complete SQLite dashboard counts are connected. `hasHumanLabel` supports global label counts and paged review CSV export; formulas are escaped and incomplete downloads are refused. `Repository.category_training_examples()` exposes human category ground truth without predictions or priority-only examples, using the existing schema. All 52 backend tests, 29 frontend tests, the real HTTP integration check, frontend lint/type/build checks, `uv lock --check`, and `git diff --check` passed. The integration check uses mocked IMAP and temporary synthetic storage, including ingested markup, aggregate refresh, frontend reload/backend restart persistence, and forbidden origins. Desktop (1440 px) and mobile (390 px) layouts, category-only saves, failure recovery, and absence of horizontal overflow were checked in the browser. No personal mailbox was contacted; ML remains tasks 5–6.
+
 ## 5. Train and evaluate the category baseline
 
-- [ ] Build one shared preprocessing path for sender, subject, and body, used by training and inference.
-- [ ] Train a scikit-learn pipeline containing TF-IDF and Logistic Regression on human-labeled examples.
-- [ ] Handle insufficient labels or missing classes with a clear explanation instead of an invalid training run.
-- [ ] Use a reproducible train/test split, with a validation subset or cross-validation within the training data for tuning; fit preprocessing only on training folds and check for duplicate-message leakage across splits.
-- [ ] Report per-class precision, recall, F1, macro F1, and a confusion matrix; document class counts and model limitations.
-- [ ] Select the Needs Review confidence threshold using validation data, retaining the held-out test set for final evaluation.
-- [ ] Save the fitted preprocessing and estimator together in a local, versioned Joblib artifact with label mapping and evaluation metadata.
-- [ ] Keep artifacts and private training data out of Git; load artifacts only from trusted local sources.
-- [ ] Test preprocessing, saved-model loading, prediction classes/confidence, empty or malformed fields, and insufficient-data behavior.
+- [x] Build one shared preprocessing path for sender, subject, and body, used by training and inference.
+- [x] Train a scikit-learn pipeline containing TF-IDF and Logistic Regression on human-labeled examples.
+- [x] Handle insufficient labels or missing classes with a clear explanation instead of an invalid training run.
+- [x] Use a reproducible train/test split, with a validation subset or cross-validation within the training data for tuning; fit preprocessing only on training folds and check for duplicate-message leakage across splits.
+- [x] Report per-class precision, recall, F1, macro F1, and a confusion matrix; document class counts and model limitations.
+- [x] Select the Needs Review confidence threshold using validation data, retaining the held-out test set for final evaluation.
+- [x] Save the fitted preprocessing and estimator together in a local, versioned Joblib artifact with label mapping and evaluation metadata.
+- [x] Keep artifacts and private training data out of Git; load artifacts only from trusted local sources.
+- [x] Test preprocessing, saved-model loading, prediction classes/confidence, empty or malformed fields, and insufficient-data behavior.
 
 **Milestone complete when:** a repeatable local training command produces an evaluated model that can be loaded and used for valid predictions.
 
+**Implementation and verification:** `uv run python -m app.train` reads confirmed category labels through a read-only version 2 SQLite connection, without storage initialization, migration, seeding, or IMAP access. Shared Unicode/case/whitespace preprocessing, exact duplicate collapse/conflict detection, and a ten-distinct-example floor train at least two supported categories and report excluded categories. Seeded stratified 60/20/20 splits keep TF-IDF fitting on training data; validation macro F1 selects C from 0.1/1/10, and validation selects a 90% accepted-accuracy cutoff with at least five accepted examples or review-all fallback. The unchanged selected model receives one held-out evaluation. Private, atomically published Joblib/JSON runs record class ordering, metrics, cutoff, versions, counts, and limitations; loading checks compatibility and requires trusted local provenance. All 62 backend/ML tests (including 10 focused ML tests), the real training-command smoke with temporary synthetic storage, fresh-process model loading/predictions, `uv lock --check`, and `git diff --check` passed. Tests confirm held-out vocabulary isolation, threshold boundaries/fallback, private permissions, read-only storage, sanitized output, and retained prior artifacts after failures. No personal mailbox or database was accessed. Backend activation, automatic inference, priority, and applying the artifact cutoff remain task 6.
+
 ## 6. Add inference, priority, and the feedback loop
 
-- [ ] Load the approved category model in the backend and classify newly ingested messages locally.
-- [ ] Assign High, Medium, or Low priority independently using documented simple rules or a separate baseline model.
-- [ ] Persist category, confidence, priority, prediction time, and model version; expose them through the API.
-- [ ] Apply the configured Needs Review threshold and display missing-model or inference-failure states without preventing inbox access.
-- [ ] Keep user corrections authoritative in the UI and eligible for subsequent training; do not overwrite them during sync or inference.
-- [ ] Provide an explicit local retraining command/workflow using accumulated labels; evaluate a replacement model before activating it.
-- [ ] Test ingestion-to-prediction, confidence boundaries, independent priority logic, missing/corrupt artifacts, and preserved corrections.
-- [ ] Verify inference makes no external AI requests and never logs raw message content.
+- [x] Load the approved category model in the backend and classify newly ingested messages locally.
+- [x] Assign High, Medium, or Low priority independently using documented simple rules or a separate baseline model.
+- [x] Persist category, confidence, priority, prediction time, and model version; expose them through the API.
+- [x] Apply the configured Needs Review threshold and display missing-model or inference-failure states without preventing inbox access.
+- [x] Keep user corrections authoritative in the UI and eligible for subsequent training; do not overwrite them during sync or inference.
+- [x] Provide an explicit local retraining command/workflow using accumulated labels; evaluate a replacement model before activating it.
+- [x] Test ingestion-to-prediction, confidence boundaries, independent priority logic, missing/corrupt artifacts, and preserved corrections.
+- [x] Verify inference makes no external AI requests and never logs raw message content.
 
 **Milestone complete when:** new emails receive predictions, uncertain items can be reviewed, and corrections feed a later deliberate training run.
 
+**Implementation and verification:** the backend loads one explicitly selected trusted run at startup; changing selection requires restart. Sync fills missing category and independent English/Indonesian priority outputs, records sanitized category failures without blocking ingestion, and preserves completed predictions and all human labels. Transactional schema version 3 adds saved cutoffs (legacy 70; null reviews all) and category errors. Explicit numeric overrides apply at read time; SQL review filters and response flags agree. Training stays read-only across versions 2/3 and never activates replacements. The local model endpoint exposes only validated aggregate metrics; Model lab displays active status and saved class ordering. All 70 backend/ML tests, 33 frontend tests, the real HTTP integration check, frontend lint/type/build checks, `uv lock --check`, and `git diff --check` passed. Checks cover saved-model inference, bilingual rules/negations, 0/100/equality/review-all/override cutoffs, corrupt/missing/incompatible artifacts, migration and inference-write rollback, correction-to-retraining and explicit replacement, retained original predictions, restart persistence, and sanitized logs/no external inference requests. TestClient checks ran outside the sandbox because its local thread portal stalled under sandbox restrictions. The synthetic preview was inspected at 1440 px and 390 px with no horizontal overflow; displayed confidence/cutoffs round to one decimal while review uses full precision. No personal mailbox, database, or model was accessed. Packaging/CI and full MVP acceptance remain tasks 7–8.
+
 ## 7. Add repeatable delivery and continuous integration
 
-Start frontend CI during milestone 1, then extend it as backend and ML capabilities become available.
+CI covers frontend, backend, ML, real HTTP integration, built-container browser checks, and secret scanning.
 
-- [ ] Run frontend linting, relevant type checks, tests, and production builds in GitHub Actions on pull requests and pushes to development branches.
-- [ ] Add backend linting, tests, and applicable type checks when the backend is introduced.
-- [ ] Add ML preprocessing, artifact-loading, and inference checks using synthetic fixtures and a small test model.
-- [ ] Add an integration/end-to-end check for inbox review, label correction, persistence, and prediction display using an isolated test database.
-- [ ] Package frontend and backend for local Docker/Compose use with persistent SQLite/model mounts and no baked-in secrets or private data.
-- [ ] Validate container builds in CI and restrict exposed ports to local access by default.
-- [ ] Check dependencies for known vulnerabilities and scan repository changes for accidentally committed secrets.
-- [ ] Document clean-clone setup, configuration, sync, labeling, training, evaluation, testing, backups, and local startup.
-- [ ] Define a local release containing the application and configuration; distribute only explicitly approved model artifacts containing no private user data.
+- [x] Run frontend linting, relevant type checks, tests, and production builds in GitHub Actions on pull requests and pushes to development branches.
+- [x] Add backend linting, tests, and applicable type checks when the backend is introduced.
+- [x] Add ML preprocessing, artifact-loading, and inference checks using synthetic fixtures and a small test model.
+- [x] Add an integration/end-to-end check for inbox review, label correction, persistence, and prediction display using an isolated test database.
+- [x] Package frontend and backend for local Docker/Compose use with persistent SQLite/model mounts and no baked-in secrets or private data.
+- [x] Validate container builds in CI and restrict exposed ports to local access by default.
+- [x] Check dependencies for known vulnerabilities and scan repository changes for accidentally committed secrets.
+- [x] Document clean-clone setup, configuration, sync, labeling, training, evaluation, testing, backups, and local startup.
+- [x] Define a local release containing the application and configuration; distribute only explicitly approved model artifacts containing no private user data.
 
 **Milestone complete when:** a clean checkout passes automated checks and starts locally with documented commands and safe configuration.
+
+**Implementation and verification:** SHA-pinned, read-only GitHub Actions jobs run locked Python/Node checks on pull requests, development/main pushes, and manual dispatch. Ruff and focused Pydantic/mypy checks cover configuration/API models; existing synthetic ML and real HTTP integration checks are reused. Digest-pinned multi-stage images serve built React through unprivileged Nginx and run one FastAPI worker, with loopback-only default ports, host UID/GID support, private SQLite/model mounts, and read-only serving models. The [delivery guide](delivery.md) documents clean setup, configuration, training/evaluation/activation, backups, checks, and a model-free versioned source release. Archive exclusion was checked with synthetic accidentally tracked private files. All 70 backend tests, 33 frontend tests, the real HTTP integration check, frontend lint/type/build checks, Ruff/mypy, lockfile checks, actionlint, and the built-container Chromium check passed, including clean-source installs. The browser check verifies empty startup, runtime permissions, saved prediction display/correction, container-recreation persistence, one-off synthetic training, retained model permissions/loading/inference, and isolated free loopback ports. Python/npm audits and redacted Git-history scans passed; vulnerable development-only Pygments/Tornado pins were updated through uv. Docker checks used elevated execution after sandbox daemon denial; workflow validation succeeded with a narrowly scoped file mount. No personal mailbox, database, or model was accessed. Hosted Actions will run after these files are pushed; no release tag, publication, or deployment was performed. Full MVP acceptance remains task 8.
 
 ## 8. Complete MVP acceptance and security review
 
 - [ ] Walk through the [client brief's definition of success](client-brief.md#definition-of-success) using an explicitly configured test account or approved local mailbox.
-- [ ] Verify the full path: sync → local storage → labeling → training/evaluation → prediction → Smart Inbox → correction → later retraining.
-- [ ] Verify the dashboard treemap matches local category totals, refreshes when categories change, and opens the expected messages from a selected category.
-- [ ] Confirm operation without cloud infrastructure and without external AI calls; allow only expected network access such as IMAP and the local API during normal use.
-- [ ] Confirm read-only mailbox behavior, protected secrets, sanitized logs, safe message rendering, and restricted local API access.
-- [ ] Confirm automated fixtures, screenshots, CI outputs, container images, and release files contain no private emails or credentials.
-- [ ] Verify database/model persistence across restart and understandable recovery from connection failures, missing models, and invalid inputs.
+- [x] Verify the full path: sync → local storage → labeling → training/evaluation → prediction → Smart Inbox → correction → later retraining.
+- [x] Verify the dashboard treemap matches local category totals, refreshes when categories change, and opens the expected messages from a selected category.
+- [x] Confirm operation without cloud infrastructure and without external AI calls; allow only expected network access such as IMAP and the local API during normal use.
+- [x] Confirm read-only mailbox behavior, protected secrets, sanitized logs, safe message rendering, and restricted local API access.
+- [x] Confirm automated fixtures, screenshots, CI outputs, container images, and release files contain no private emails or credentials.
+- [x] Verify database/model persistence across restart and understandable recovery from connection failures, missing models, and invalid inputs.
 - [ ] Review accessibility and frontend fidelity against the Open Design handover with the final integrated states.
 - [ ] Resolve failing checks and document remaining model limitations before declaring the MVP complete.
-- [ ] Update the [architecture](architecture.md) and [client brief](client-brief.md) to reflect agreed implementation decisions and the frontend-first delivery order.
+- [x] Update the [architecture](architecture.md) and [client brief](client-brief.md) to reflect agreed implementation decisions and the frontend-first delivery order.
+
+**Acceptance status (5 October 2026):** automated synthetic acceptance and security checks pass; the MVP remains **not accepted**. The [acceptance report](acceptance.md) maps evidence and limits to every checkbox, records clean-source verification and reviewed synthetic screenshots, and documents the remaining procedure. Two real HTTP cases cover API-confirmed labels → SQLite training/evaluation → explicit model activation/restart → inference → UI category/priority correction → later retraining, retaining older artifacts and predictions. All 70 backend tests, 33 frontend tests, frontend lint/type/build, Ruff/mypy/lockfile checks, dependency audits, redacted secret scans, and the built-container Chromium workflow pass. The source-archive privacy test was fixed to run without checkout Git metadata. Dedicated live-account acceptance and fidelity against the original Open Design references remain open because neither prerequisite was available. Hosted Actions were not run for these changes; no real mailbox, private model, release tag, publication or deployment was used.
 
 ## Deferred work
 

@@ -33,6 +33,42 @@ class Prediction(WireModel):
     reason_priority: str | None = None
     model_version: str | None = None
     predicted_at: AwareDatetime | None = None
+    review_threshold: float | None = Field(default=70, ge=0, le=100, allow_inf_nan=False)
+    category_error: Literal["model_unavailable", "inference_failed"] | None = None
+
+
+Score = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False, strict=True)]
+
+
+class ClassMetrics(WireModel):
+    category: Category
+    precision: Score
+    recall: Score
+    f1: Score
+
+
+class ModelEvaluation(WireModel):
+    macro_f1: Score
+    per_class: list[ClassMetrics]
+    confusion_matrix: list[list[Annotated[int, Field(ge=0, strict=True)]]]
+
+    @model_validator(mode="after")
+    def require_square_matrix(self) -> "ModelEvaluation":
+        size = len(self.per_class)
+        if (len({row.category for row in self.per_class}) != size
+                or len(self.confusion_matrix) != size
+                or any(len(row) != size for row in self.confusion_matrix)):
+            raise ValueError("Evaluation class ordering or matrix shape is invalid.")
+        return self
+
+
+class ModelStatus(WireModel):
+    state: Literal["ready", "unconfigured", "invalid", "demo"]
+    model_version: str | None = None
+    supported_categories: list[Category] = Field(default_factory=list)
+    review_threshold: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
+    threshold_overridden: bool = False
+    evaluation: ModelEvaluation | None = None
 
 
 class HumanLabel(WireModel):
@@ -64,6 +100,7 @@ class EmailQuery(WireModel):
     category: CategoryFilter | None = None
     priority: Priority | None = None
     needs_review: bool = False
+    has_human_label: bool = False
     limit: int = Field(default=50, ge=1, le=100)
     offset: int = Field(default=0, ge=0, le=1_000_000)
 

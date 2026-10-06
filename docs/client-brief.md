@@ -112,6 +112,10 @@ The first classifier is TF-IDF with Logistic Regression. The user can correct it
 
 The MVP succeeds when a user can retrieve real messages over IMAP, store and classify them locally, label examples, train and evaluate a model, see category/confidence and priority predictions in the Smart Inbox, understand category distribution through an accurate dashboard treemap, correct predictions, and repeat the setup from documented instructions. Automated CI checks should validate changes before they are merged.
 
+The [acceptance report](acceptance.md) records the evidence for this definition. Synthetic automation verifies the full labeling/training/prediction/correction/retraining workflow, local persistence, dashboard totals, security controls and final integrated browser states. Training and activation remain deliberate local actions; a replacement model preserves existing completed predictions and human corrections. Synthetic evaluation demonstrates the workflow and does not establish accuracy for a personal mailbox.
+
+As of 5 October 2026, the dedicated real test-account walkthrough and comparison with the original Open Design references are still pending. The MVP must not be declared complete from automated fixture results alone. Frontend-first delivery and the existing MVP scope remain agreed.
+
 ## Later opportunities
 
 Once the core workflow is dependable, the product could explore local LLM support for summaries, action items, deadlines, explanations, search, or low-confidence classification. These are future options and should preserve the local-first privacy expectation.

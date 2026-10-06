@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document describes the MVP architecture for the local-first smart email classifier. Tasks 1–3 are implemented: the React fixture preview, FastAPI/SQLite foundation, and safe IMAP ingestion. Frontend API integration and ML workflows below remain design targets.
+This document describes the MVP architecture for the local-first smart email classifier. Tasks 1–6 are implemented: React Smart Inbox/API integration, FastAPI/SQLite, safe IMAP ingestion, persistent human labels, and local category training/evaluation with versioned artifacts. Approved model loading, sync-time category inference, independent bilingual priority rules, persisted review cutoffs/errors, and Model lab evaluation display are implemented.
 
 The MVP retrieves mail over IMAP, stores the minimum useful data locally, supports manual labels, trains and evaluates a traditional ML category model, assigns a basic priority, and presents the results in a React Smart Inbox backed by a FastAPI service. It does not send mail or modify the mailbox.
 
@@ -75,7 +75,7 @@ Each message is identified by account/folder/UIDVALIDITY/UID and mapped to an op
 
 ### Persistence
 
-SQLite uses the standard-library `sqlite3` module and a repository boundary. Version 2 adds scoped mailbox/message identity and progress fields to version 1's emails, predictions, human labels, and singleton sync state. The numbered migration is transactional and preserves existing records and demo state. Foreign keys, value constraints, parameterized queries, and short transactions remain in use. Schema versioning uses `PRAGMA user_version`; unknown versions are rejected without resetting data.
+SQLite uses the standard-library `sqlite3` module and a repository boundary. Version 2 adds scoped mailbox/message identity and progress fields to version 1's emails, predictions, human labels, and singleton sync state. Version 3 adds each prediction's review cutoff (legacy default 70; null means review all) and sanitized category error. Numbered migrations are transactional and preserve existing records and demo state. Foreign keys, value constraints, parameterized queries, and short transactions remain in use. Schema versioning uses `PRAGMA user_version`; unknown versions are rejected without resetting data.
 
 The conceptual data model is:
 
@@ -87,21 +87,25 @@ The conceptual data model is:
 | Mailbox / IMAP identity | Repeatable scoped upserts | Account scope, folder, expected UIDVALIDITY, UID, local email ID, optional Message-ID |
 | Sync state | Bounded retrieval bookkeeping | Running/last outcome, timestamps, imported/processed/total/skipped, sanitized error code |
 
-Human labels store independently optional category and priority plus a server timestamp and manual/correction source, without feedback history. Partial label updates preserve omitted fields and never update predictions. Ingestion upserts only message fields and identity, preserving both labels and predictions. Each message, identity mapping, and progress update commit atomically. Skips/failures retain previous imports for safe retry. Local mail is retained until explicit local deletion; database/backup permissions, SQLite backup, restore, and deletion procedures are in the [setup guide](../README.md#local-data-retention-backup-and-deletion).
+Human labels store independently optional category and priority plus a server timestamp and manual/correction source, without feedback history. Partial label updates preserve omitted fields and never update predictions. The frontend saves only newly confirmed or changed fields, keeps unsaved drafts during failures/refreshes, and reads the server Needs Review flag. Unconfirmed choices are blank instead of default ground truth. `Repository.category_training_examples()` joins messages with human categories only; unverified predictions and priority-only labels are excluded. The sync service fills missing category/priority outputs before persistence, preserving completed predictions and all human labels. Each message, identity mapping, prediction, and progress update commit atomically. Inference failures retain the message and priority and remain separate from IMAP outcomes. Skips/failures retain previous imports for safe retry. Local mail is retained until explicit local deletion; database/backup permissions, SQLite backup, restore, and deletion procedures are in the [setup guide](../README.md#local-data-retention-backup-and-deletion).
 
 ### Classification and training
 
-Category and priority are independent outputs. The first category baseline uses a scikit-learn pipeline over sender, subject, and body:
+Category and priority are independent outputs. `uv run python -m app.train` trains the category baseline from human labels using a read-only version 2 or 3 SQLite connection. It does not initialize/migrate storage, seed messages, access IMAP, or activate a model. The scikit-learn pipeline combines sender name/address, subject, and body:
 
 ```text
 normalized email text → TF-IDF → Logistic Regression → category + confidence
 ```
 
-The starting category set is Recruitment, LinkedIn, Personal, Transaction, Newsletter, Promotion, Spam, and Other. The taxonomy may change after inspecting labeled data. Low-confidence predictions are surfaced as “Needs Review”; the threshold should be configurable and selected from validation results rather than assumed to be a universal constant.
+The starting category set is Recruitment, LinkedIn, Personal, Transaction, Newsletter, Promotion, Spam, and Other. Training requires at least two categories with ten distinct usable examples each; missing and underrepresented categories are reported and excluded. Shared preprocessing applies Unicode NFKC, case folding, and whitespace cleanup; missing fields are empty, invalid field types are rejected, and tokenless examples are excluded. Exact normalized duplicates collapse before splitting; conflicting duplicate labels stop training. Similar templates/threads are not grouped, a documented limitation.
 
-Priority is High, Medium, or Low. Begin with transparent rules or a separate simple model; do not conflate priority with category. Model training is an explicit local command or controlled workflow in the MVP, not continuous or automatic retraining. Training must use a train/test split and report per-class precision, recall, F1, macro F1, and a confusion matrix. Accuracy alone is not sufficient for imbalanced labels.
+Seed 42 produces stratified approximately 60/20/20 training/validation/test splits after deterministic content ordering. Full pipelines fit only the training split, preventing held-out vocabulary/IDF leakage. Validation macro F1 selects Logistic Regression C from 0.1/1/10 with smaller-C tie breaking; TF-IDF keeps its defaults without a stop-word list. The selected fitted model is not refitted on validation/test examples. The test set is evaluated once after selection, reporting per-class precision/recall/F1/support, macro F1, and a confusion matrix ordered by the saved supported classes.
 
-Persist the fitted preprocessing and estimator together as a versioned local artifact (Joblib is the proposed format). The runtime loads the artifact for inference and handles a missing model gracefully, such as exposing predictions as unavailable until a model is trained. Artifacts and datasets containing personal data must be excluded from Git.
+Confidence is maximum class probability × 100. The validation-selected cutoff accepts at least five messages at 90% or greater observed accuracy, taking the lowest qualifying confidence; equality is accepted. A null cutoff means review all, including confidence 100. Validation/test review coverage and accepted accuracy are recorded separately. Validation reuse for tuning/cutoff selection and small sample counts limit reliability; probabilities are uncalibrated and validation accuracy does not guarantee future accuracy. Each inference persists its artifact cutoff; switching models does not change earlier cutoffs. An explicitly configured numeric review threshold overrides all saved cutoffs at read time, including review-all. SQL filtering and response flags use the same comparison; human category labels suppress review, while missing categories/confidence stay outside it.
+
+Priority is High, Medium, or Low. `priority-rules-v1` independently matches normalized English/Indonesian subject/body signals with High precedence, recognized negated-action suppression, and a Medium default; it continues when category inference is unavailable. Exact phrases and limitations are documented in the [priority rules](../README.md#independent-priority-rules). Model training is an explicit local command or controlled workflow in the MVP, not continuous or automatic retraining. Training must use a train/test split and report per-class precision, recall, F1, macro F1, and a confusion matrix. Accuracy alone is not sufficient for imbalanced labels.
+
+Each training run atomically publishes a private version directory under ignored `models/`, containing a Joblib bundle of fitted preprocessing/estimator/metadata and an aggregate JSON evaluation report. Metadata records artifact/preprocessing versions, model version/time, supported class ordering, class/split counts, parameters, review cutoff, limitations, and exact dependency versions. A staged load check precedes publication; failures preserve older runs. Directories/files use 0700/0600 permissions. The loader requires an explicitly selected trusted local run and rejects missing/corrupt/incompatible artifacts; checks do not make untrusted Joblib files safe. Model vocabularies can contain private terms and must remain out of Git. See the [training guide](../README.md#train-and-evaluate-the-category-model) for commands, privacy, metrics, and recovery. The backend loads the explicitly approved `MEIRUZONE_MODEL_DIRECTORY` once at startup; changing it requires restart. Unconfigured/invalid models leave inbox/sync available. `GET /api/v1/model` supplies sanitized status, version, supported categories, effective cutoff/override state, and allowlisted aggregate evaluation. Model lab uses saved class order for matrix axes and leaves excluded categories without scores. Per-message `categoryError` distinguishes unavailable models from inference failures; subsequent sync retries missing categories. Demo mode does not load models. No automatic retraining, model selection, or backfill occurs.
 
 ### Background synchronization
 
@@ -114,9 +118,10 @@ The current “sync now” operation is synchronous, with persisted progress ava
 1. A user configures an IMAP account using local configuration/secrets.
 2. The backend fetches recent or unread messages.
 3. The parser normalizes headers and converts the body to clean text.
-4. The backend upserts the message locally using its stable provider identifier.
-5. If a trained model is available, category and confidence are predicted; priority is assigned independently.
-6. The Smart Inbox reads the stored message and prediction through the API.
+4. The backend reads any previous prediction using the scoped provider identity.
+5. Missing category/confidence outputs use the approved model when available; missing priority uses independent text rules. Category failures retain a sanitized error and priority.
+6. Message, identity, predictions, and progress commit atomically, preserving completed predictions and human labels.
+7. The Smart Inbox reads the stored message and prediction through the API.
 
 ### Labeling and feedback
 
@@ -139,11 +144,13 @@ app/
 ├── config.py     # Backend environment configuration
 ├── imap.py       # Verified TLS, read-only selection, selective bounded fetches
 ├── parser.py     # Header decoding, normalized records, safe HTML-to-text
+├── ml.py         # Shared category preprocessing, trusted loading, prediction helper
+├── train.py      # Explicit category fitting, validation/test evaluation, atomic artifacts
 └── demo.py       # Synthetic seed records
-frontend/         # React fixture preview; API integration is task 4
-tests/            # Synthetic API/config/storage/IMAP/parser checks
+frontend/         # React Smart Inbox, HTTP/fixture adapters, and integration checks
+tests/            # Synthetic API/config/storage/IMAP/parser/ML checks
 data/             # Ignored local databases
-models/           # Future ignored local model artifacts
+models/           # Ignored private versioned model artifacts and evaluation reports
 ```
 
 Keep private email data, account credentials, tokens, database files, and trained artifacts out of version control. Synthetic or anonymized examples may be committed for documentation and automated checks.
@@ -154,13 +161,13 @@ The MVP should run from a clean local setup with the fewest necessary processes.
 
 Secrets come from backend process environment variables and are never committed. An ignored private `.env` may be explicitly loaded by `uv run --env-file`; `.env.example` contains safe placeholders. Password/app-password login is supported through backend-only IMAP settings; passwords are masked, excluded from settings serialization, and never stored in SQLite or returned by the API. OAuth and simultaneous account/folder configuration remain future work.
 
-The documented Uvicorn startup binds to `127.0.0.1:8000` with access logging disabled. Host names are limited to loopback, and browser origins to an explicit local allowlist. All writes require JSON and `X-Meiruzone-Request: 1`, with an actual 4096-byte body limit; foreign/null origins are rejected. This protects against unsolicited browser writes, not programs already running as the local user. Errors and application logs omit input values, bodies, and private exception details. See the [implemented API contract](api-contract.md) and root README for startup, configuration, and verification.
+The documented Uvicorn startup binds to `127.0.0.1:8001` with access logging disabled. Host names are limited to loopback, and browser origins to an explicit local allowlist. All writes require JSON and `X-Meiruzone-Request: 1`, with an actual 4096-byte body limit; foreign/null origins are rejected. This protects against unsolicited browser writes, not programs already running as the local user. Errors and application logs omit input values, bodies, and private exception details. See the [implemented API contract](api-contract.md) and root README for startup, configuration, and verification.
 
 SMTP, cloud hosting, external LLM APIs, Redis, Celery, Kubernetes, and MLflow are outside the MVP runtime.
 
 ## Quality and delivery
 
-The planned GitHub Actions workflow should run on pull requests and pushes to development branches. It should install dependencies, lint, run backend and ML checks, run frontend checks, build the application, and validate the Docker image when those components exist. ML checks should cover preprocessing, artifact loading, prediction shape/classes, and malformed or missing fields. Dashboard checks should cover aggregate totals, effective-category precedence, Unclassified messages, pagination independence, category navigation, refresh after corrections, and accessible empty/error states. CI fixtures must be synthetic or anonymized.
+The GitHub Actions workflow runs on pull requests, development/main pushes, and manual dispatch with read-only permissions and SHA-pinned actions. Separate jobs install locked dependencies and run backend/ML tests, Ruff and focused configuration/API-model typing, frontend checks/builds/audits, real HTTP integration, digest-pinned container builds and a synthetic Chromium workflow, and redacted Git-history secret scanning. ML checks cover preprocessing, artifact loading, prediction shape/classes, and malformed or missing fields. Dashboard checks cover aggregate totals, effective-category precedence, Unclassified messages, pagination independence, category navigation, refresh after corrections, and accessible empty/error states. Fixtures use isolated synthetic data. The [delivery guide](delivery.md) documents clean-clone setup, loopback-only Compose defaults, persistent private host mounts, one-off training, backups, checks, and source releases that exclude private data/models.
 
 Continuous Integration is in scope; automatic production deployment is not required. A local release may package the application, Compose configuration, and an explicitly versioned model artifact without requiring a hosted service.
 
@@ -171,3 +178,7 @@ The architecture intentionally leaves extension points for PostgreSQL, richer sc
 ## MVP acceptance path
 
 The end-to-end path is complete when a user can sync real mail over IMAP, review locally stored messages, label examples, train and evaluate a model, receive category/confidence and priority predictions, correct them, and use the Smart Inbox and an accurate category treemap locally with reproducible setup and CI checks.
+
+The [task 8 acceptance report](acceptance.md) separates local synthetic evidence from final acceptance. Real HTTP checks now derive training data entirely from API-confirmed human labels, verify read-only training, require explicit model selection/restart for each version, and preserve completed predictions and corrections through replacement. Chromium checks built containers, keyboard controls, mobile overflow, loading/error recovery and browser network destinations; screenshots use synthetic data only. Clean extracted source is also verified without checkout Git metadata.
+
+As of 5 October 2026, automated acceptance passes but the MVP is not yet accepted. The dedicated live IMAP walkthrough, including provider-side flag comparison, and final fidelity comparison with the original Open Design handover remain required. Hosted CI evidence is distinct from local command results. No public API or runtime architecture changes were needed for this review.

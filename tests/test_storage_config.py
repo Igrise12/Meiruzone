@@ -53,10 +53,11 @@ class StorageConfigTests(unittest.TestCase):
             repository.initialize()
             repository.initialize()
             with repository.connect() as connection:
-                after = {table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table}")]
+                after = {table: [tuple(row)[:8] if table == "predictions" else tuple(row)
+                                 for row in connection.execute(f"SELECT * FROM {table}")]
                          for table in before}
                 self.assertEqual(before, after)
-                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
                 self.assertEqual(connection.execute("SELECT demo_seeded FROM sync_state").fetchone()[0], 1)
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM imap_messages").fetchone()[0], 0)
             status = repository.sync_status()
@@ -88,15 +89,18 @@ class StorageConfigTests(unittest.TestCase):
             settings = Settings.from_env()
         self.assertFalse(settings.demo)
         self.assertEqual(settings.database_path, Path("data/meiruzone.sqlite3"))
-        self.assertEqual(settings.review_threshold, 70)
+        self.assertIsNone(settings.review_threshold)
+        self.assertIsNone(settings.model_directory)
         with patch.dict(os.environ, {
             "MEIRUZONE_DATABASE_PATH": "/tmp/synthetic.sqlite3", "MEIRUZONE_DEMO": "true",
             "MEIRUZONE_REVIEW_THRESHOLD": "65", "MEIRUZONE_FRONTEND_ORIGINS": "http://localhost:4173",
             "MEIRUZONE_IMAP_PASSWORD": "never-read-or-stored",
+            "MEIRUZONE_MODEL_DIRECTORY": "/tmp/synthetic-approved-model",
         }, clear=True):
             settings = Settings.from_env()
         self.assertTrue(settings.demo)
         self.assertEqual(settings.review_threshold, 65)
+        self.assertEqual(settings.model_directory, Path("/tmp/synthetic-approved-model"))
         self.assertEqual(settings.frontend_origins, ("http://localhost:4173",))
         self.assertNotIn("never-read-or-stored", repr(settings))
 
@@ -121,7 +125,7 @@ class StorageConfigTests(unittest.TestCase):
             repository.initialize()
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             with repository.connect() as connection:
-                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
                 with self.assertRaises(sqlite3.IntegrityError):
                     connection.execute("INSERT INTO human_labels VALUES (?, ?, ?, ?, ?)", (
                         "missing", "Other", "Low", "2026-10-01T00:00:00Z", "manual",
@@ -137,7 +141,7 @@ class StorageConfigTests(unittest.TestCase):
                         "synthetic", None, None, "2026-10-01T00:00:00Z", "manual",
                     ))
             with repository.connect() as connection:
-                connection.execute("PRAGMA user_version = 3")
+                connection.execute("PRAGMA user_version = 4")
             with self.assertRaises(ValueError):
                 repository.initialize()
             with repository.connect() as connection:

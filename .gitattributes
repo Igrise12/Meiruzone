@@ -1,0 +1,22 @@
+# Source releases never include private local state, even if accidentally tracked.
+.env export-ignore
+.env.* export-ignore
+.env.example -export-ignore
+/data export-ignore
+/datasets export-ignore
+/backups export-ignore
+/models export-ignore
+*.db export-ignore
+*.db-* export-ignore
+*.sqlite export-ignore
+*.sqlite-* export-ignore
+*.sqlite3 export-ignore
+*.sqlite3-* export-ignore
+*.eml export-ignore
+*.mbox export-ignore
+*.joblib export-ignore
+*.pkl export-ignore
+*.pickle export-ignore
+*.onnx export-ignore
+*.safetensors export-ignore
+/.codegraph export-ignore

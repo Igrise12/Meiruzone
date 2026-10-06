@@ -59,8 +59,8 @@ class IngestionTests(unittest.TestCase):
         email_id = self.emails()[0]["id"]
         self.assertNotEqual(email_id, "2")
         with self.repository.connect() as connection:
-            connection.execute("INSERT INTO predictions(email_id, category, confidence) VALUES (?, ?, ?)",
-                               (email_id, "Newsletter", 60))
+            connection.execute("UPDATE predictions SET category = ?, confidence = ?, category_error = NULL, review_threshold = 70 WHERE email_id = ?",
+                               ("Newsletter", 60, email_id))
         label = self.client.patch(f"/api/v1/emails/{email_id}/labels", json={
             "category": "Personal", "priority": "High", "source": "correction",
         }, headers=WRITE_HEADERS).json()

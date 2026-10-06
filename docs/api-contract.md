@@ -1,10 +1,9 @@
 # Local API contract, version 1
 
-The backend runs at `http://127.0.0.1:8000`. `GET /openapi.json` exposes the
+The backend runs at `http://127.0.0.1:8001`. `GET /openapi.json` exposes the
 executable schemas. Interactive documentation is disabled to avoid loading
 external assets. Application endpoints use `/api/v1` and return JSON.
-SQLite persistence and safe IMAP retrieval are implemented; frontend integration
-remains task 4.
+SQLite persistence, safe IMAP retrieval, local inference/priority, and frontend integration are implemented.
 
 ## Shared values
 
@@ -26,10 +25,18 @@ remains task 4.
 - Resolve effective category and priority independently: human value, then
   predicted value. Missing category becomes Unclassified; missing priority
   remains unavailable.
-- `needsReview` requires a predicted category, available confidence strictly
-  below the configured threshold, and no human category. A priority-only
-  label does not confirm category. Missing predictions/confidence do not
-  enter Needs Review. Initial threshold: 70; model validation will tune it later.
+- `needsReview` requires a predicted category, available confidence, and no human
+  category. Numeric `prediction.reviewThreshold` marks strictly lower confidence
+  for review; equality is accepted. Null means review all, including confidence
+  100. Each prediction retains its model's validated cutoff; migrated/demo
+  predictions use 70. An explicit backend numeric override changes the effective
+  cutoff in responses/filtering without changing saved values. Priority-only
+  labels do not confirm category. Missing categories/confidence remain outside
+  Needs Review and show their own status.
+- `prediction.categoryError` is null, `model_unavailable`, or `inference_failed`.
+  Priority-only predictions remain usable during model failures; they include
+  a fixed `reasonPriority` explanation with `priority-rules-v1`. Category
+  confidence is unrelated to priority. No email text is included in explanations.
 
 ## List and detail
 
@@ -41,11 +48,14 @@ remains task 4.
 | `category` | No filter | A category or Unclassified |
 | `priority` | No filter | High, Medium, Low |
 | `needsReview` | `false` | Boolean; true selects review items, false applies no review restriction |
+| `hasHumanLabel` | `false` | Boolean; true selects any human label, including category-only or priority-only; false applies no label restriction |
 | `limit` | 50 | Integer, 1–100 |
 | `offset` | 0 | Integer, 0–1,000,000 |
 
 Omit category/priority to select all; do not send the frontend's `All` value.
-Unknown query fields are rejected. Search includes sender, address, subject,
+Unknown query fields are rejected. `hasHumanLabel=true` combines with all other
+filters; its `total` supplies the global confirmed-label count when other filters
+are omitted. CSV review export pages over this filter independently of UI filters. Search includes sender, address, subject,
 plain-text body, effective category, and effective priority. `%`, `_`, and SQL
 syntax are literal text. Sort by receivedAt descending, then ID ascending.
 `total` counts matching messages before pagination. An offset beyond the
@@ -70,7 +80,9 @@ Example: `GET /api/v1/emails?category=Recruitment&needsReview=true&limit=1`
       "reasonCategory": null,
       "reasonPriority": null,
       "modelVersion": "synthetic-demo",
-      "predictedAt": "2026-10-01T12:00:00Z"
+      "predictedAt": "2026-10-01T12:00:00Z",
+      "reviewThreshold": 70,
+      "categoryError": null
     },
     "humanLabel": null,
     "needsReview": true
@@ -209,7 +221,7 @@ use BODY.PEEK and target text parts, with a combined 64 KiB header budget and
 are never retained. Message-ID is internal metadata, not the deduplication key.
 
 Deduplication uses account/folder/UIDVALIDITY/UID with independent local IDs.
-Upserts preserve predictions and human labels. Deleted or moved provider mail
+Upserts preserve completed predictions and all human labels. The sync service classifies missing category outputs and fills missing independent priority before committing message, identity, predictions, and progress together. Missing/failed category inference does not make sync partial or increase skipped; it records categoryError and retains priority. Retry happens only when the message is selected by a later sync. Other stored messages are untouched, including after model replacement. Deleted or moved provider mail
 remains locally stored. A UIDVALIDITY change stops sync before message fetching
 with `imap_uidvalidity_changed`; see the [recovery and backup instructions](../README.md#sync-real-mail).
 
@@ -235,6 +247,44 @@ messages. Error text never includes provider replies or private input.
 | storage_unavailable | Local storage operation failed |
 | sync_failed | Sanitized unexpected sync failure |
 | sync_interrupted | Backend restarted during sync |
+
+## Active model and evaluation
+
+`GET /api/v1/model` returns 200 independently of model availability:
+
+```json
+{
+  "state": "ready",
+  "modelVersion": "category-<UTC timestamp>-<unique suffix>",
+  "supportedCategories": ["Recruitment", "Spam"],
+  "reviewThreshold": 80,
+  "thresholdOverridden": false,
+  "evaluation": {
+    "macroF1": 0.8,
+    "perClass": [
+      {"category": "Recruitment", "precision": 0.8, "recall": 0.8, "f1": 0.8},
+      {"category": "Spam", "precision": 0.8, "recall": 0.8, "f1": 0.8}
+    ],
+    "confusionMatrix": [[4, 1], [1, 4]]
+  }
+}
+```
+
+States are ready (a trusted selected run loaded), unconfigured (no selected
+run), invalid (missing/corrupt/incompatible run), and demo (illustrative
+predictions; no model loading). Without an active model, version/evaluation
+are null and supportedCategories is empty. Ready's reviewThreshold is the
+selected artifact cutoff or explicit configuration override; null is review-all.
+It does not replace earlier predictions' individually saved cutoffs.
+
+All metrics are finite fractions from 0–1. perClass and both confusion-matrix
+axes follow supportedCategories in the saved artifact's order. Only validated
+aggregate test metrics are exposed: no artifact paths, vocabularies, private
+training fields, full metadata, or exception details. Unsupported categories
+have no evaluation row. These are held-out measurements, not quality guarantees.
+Changing MEIRUZONE_MODEL_DIRECTORY requires backend restart; training alone
+never activates a replacement. There is no model upload, activation write,
+training endpoint, backfill operation, or automatic retraining.
 
 ## Access and errors
 
@@ -283,19 +333,35 @@ Non-validation errors have an empty fields array.
 | 500 | Sanitized unexpected failure / internal_error |
 | 503 | Sync unavailable or temporary storage failure |
 
-## Frontend adapter mapping for task 4
+## Frontend integration
 
-The fixture adapter remains the default. Browser labels are demo-only and
-are not automatically imported into SQLite.
+The frontend uses native fetch against the local API by default. An explicit
+`VITE_DATA_SOURCE=fixtures` keeps synthetic offline development/testing available.
+Fixture browser labels are not automatically imported into SQLite. API failures
+remain visible and recoverable without substituting demo data.
 
-- Replace bulk getEmails/client filtering with list queries, paging, and
-  detail fetching. Format receivedAt into the display-only received value.
-- Use each record's humanLabel instead of bulk getLabels. Extend the current
-  frontend label type to support partial labels and map explicit nulls.
-- PATCH changed fields and source; use the returned server timestamp and
-  label rather than browser-generated confirmedAt.
-- Map statistics.categories to existing chart rows and retain statistics.total.
-- Use server needsReview so the configured threshold is authoritative.
-- Read sync status, distinguish demo no-ops, and refresh inbox/aggregates after
-  future real imports. Retain failure/retry states.
-- Keep mailbox credentials out of frontend variables, storage, and logs.
+- List queries perform server-side search/filtering and 50-message pagination;
+  only selected details load bodies. UTC receivedAt values format locally.
+- Each record's humanLabel supports partial fields/nulls. Newly confirmed or
+  changed fields and source are PATCHed, using the returned server timestamp.
+  Failed-save drafts survive selection and data refreshes within the page session.
+- Effective category/priority resolve human values independently before
+  predictions. needsReview comes directly from the backend.
+- Treemap counts/percentages and total come from category-stats. Global review
+  and confirmed-label counters use unfiltered list totals with limit=1. Saves,
+  sync completion, and explicit refresh reload records and aggregates.
+- Sync offers recent/unread with limit 50, polls during running operations,
+  identifies demo no-ops, and displays persisted partial/failure outcomes.
+- CSV export pages over hasHumanLabel=true, keeps predicted and confirmed columns
+  separate, escapes spreadsheet formulas, and aborts incomplete downloads.
+- No credentials enter frontend settings/storage, API responses, or client logs.
+  Configurable API URLs must target loopback; writes use the documented marker.
+
+## Local category training data
+
+`Repository.category_training_examples()` reads the configured SQLite repository
+and returns dictionaries containing id, sender, address, subject, body, category,
+optional priority, confirmed_at, and source, ordered by ID. Only records with a
+non-null human category qualify. Predictions and priority-only labels never
+become category ground truth. This is a local Python interface, not an HTTP
+export or training operation. The reader opens storage read-only and accepts initialized schema versions 2 and 3 without migration or initialization.

@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "lint": "eslint .",
-    "typecheck": "tsc -b --pretty false"
+    "typecheck": "tsc -b --pretty false",
+    "test:integration": "MEIRUZONE_INTEGRATION=1 vitest run tests/api.integration.test.tsx",
+    "test:containers": "playwright test"
   },
   "dependencies": {
     "react": "^19.1.1",
@@ -17,6 +19,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.35.0",
+    "@playwright/test": "^1.63.0",
     "@testing-library/jest-dom": "^6.8.0",
     "@testing-library/react": "^16.3.0",
     "@types/node": "^24.3.0",

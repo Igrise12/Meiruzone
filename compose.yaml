@@ -1,0 +1,48 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    user: "${MEIRUZONE_UID:-1000}:${MEIRUZONE_GID:-1000}"
+    env_file:
+      - path: ${MEIRUZONE_ENV_FILE:-.env}
+        required: false
+    ports:
+      - "127.0.0.1:${MEIRUZONE_API_PORT:-8001}:8000"
+    volumes:
+      - type: bind
+        source: ${MEIRUZONE_DATA_DIRECTORY:-./data}
+        target: /app/data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MEIRUZONE_MODELS_DIRECTORY:-./models}
+        target: /app/models
+        read_only: true
+        bind:
+          create_host_path: false
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/sync', timeout=3).close()"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        VITE_API_BASE_URL: "http://127.0.0.1:${MEIRUZONE_API_PORT:-8001}/api/v1"
+    ports:
+      - "127.0.0.1:${MEIRUZONE_FRONTEND_PORT:-5173}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

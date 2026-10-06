@@ -2,9 +2,11 @@
 
 A local-first Smart Inbox that will classify email, estimate its priority, and learn from user corrections. Meiruzone aims to make email easier to review while keeping message processing, storage, and machine-learning inference on the user's computer.
 
+Start with the [user guide](docs/user-guide.md) for a demo walkthrough, email-account setup, syncing, labeling, training, model activation, Docker usage, and troubleshooting.
+
 ## Project status
 
-The React Smart Inbox runs locally with synthetic email data. The FastAPI backend provides validated inbox, labeling, category statistics, and explicit read-only IMAP sync backed by SQLite. Tasks 1–3 are implemented. The frontend still uses its fixture adapter; frontend API integration and trained models remain planned work.
+The React Smart Inbox reviews locally stored email and retains an explicit synthetic development mode. The FastAPI backend provides validated inbox, labeling, category statistics, and explicit read-only IMAP sync backed by SQLite. Tasks 1–7 are implemented, including local category training/evaluation, approved model activation, sync-time inference, independent priority rules, GitHub Actions, and local Docker Compose packaging. The frontend uses the local API by default, with an explicit offline fixture mode. Model lab displays active status and saved held-out metrics; missing or failed category predictions leave messages and manual labeling available. Follow the [delivery guide](docs/delivery.md) for repeatable setup and packaging; full MVP acceptance remains task 8.
 
 Development starts with the **Open Design frontend handover**, using its design and source as the foundation. The frontend runs with synthetic email data, followed by backend integration and the ML workflow. See the [project task list](docs/TO-DO.md) for the current delivery order and completion criteria.
 
@@ -39,7 +41,7 @@ flowchart TD
 
 The category baseline uses **sender + subject + body → TF-IDF → Logistic Regression** to produce a category and confidence. Priority is assigned independently using simple rules or a separate baseline model. Retraining is a deliberate local operation in the MVP.
 
-Model evaluation will include per-class precision, recall, F1, macro F1, and a confusion matrix, with held-out data to measure performance.
+Model evaluation includes per-class precision, recall, F1, macro F1, and a confusion matrix, with held-out data to measure performance.
 
 ## Proposed technology
 
@@ -54,7 +56,7 @@ Model evaluation will include per-class precision, recall, F1, macro F1, and a c
 | Packaging | Docker and optional Docker Compose |
 | Continuous integration | GitHub Actions |
 
-React, FastAPI, SQLite, and safe IMAP ingestion are implemented. Machine learning, packaging, and CI remain later milestones.
+React/API integration, persistent human labeling, FastAPI, SQLite, safe IMAP ingestion, category training/evaluation, approved model activation, sync-time inference, priority rules, local packaging, and CI are implemented. Final live-account and original-design acceptance remain open; see the [acceptance report](docs/acceptance.md).
 
 ## Privacy and security
 
@@ -81,27 +83,29 @@ Frontend CI should start in the first phase and expand as backend and ML compone
 
 ```text
 Meiruzone/
-├── app/                  # FastAPI routes, models, services, SQLite, configuration
-├── docker/               # Placeholder for container configuration
+├── app/                  # FastAPI, SQLite, ingestion, shared ML helpers, training CLI
+├── docker/               # Backend/frontend images and local web-server configuration
 ├── docs/
 │   ├── architecture.md   # Proposed system design and data flows
 │   ├── api-contract.md   # Implemented HTTP shapes and frontend adapter mapping
 │   ├── client-brief.md   # Product goals, scope, and success criteria
+│   ├── user-guide.md     # Setup, daily use, training, and troubleshooting
 │   └── TO-DO.md          # Frontend-first implementation checklist
 ├── frontend/             # Vite + React + TypeScript Smart Inbox preview
 │   ├── src/              # Inbox UI, synthetic fixtures, adapter, and treemap
 │   ├── tests/            # Component and aggregate tests
 │   └── README.md         # Frontend setup and verification commands
 ├── playground/           # Placeholder for experiments and notebooks
-├── tests/                # Backend API/storage tests with temporary synthetic data
+├── tests/                # Backend and ML tests with temporary synthetic data
 ├── data/                 # Ignored local database; created at backend startup
+├── models/               # Ignored private versioned model runs; created by training
 ├── .env.example          # Safe backend configuration template
 ├── hello.py              # Python starter entry point
 ├── pyproject.toml        # Python metadata and dependencies
 └── uv.lock               # Locked Python dependencies
 ```
 
-The backend creates local data storage on startup. The model artifact directory will be added with the ML workflow.
+The backend creates local data storage on startup. Training creates the private model artifact directory only after fitting and evaluation succeed.
 
 ## Set up the backend
 
@@ -111,26 +115,26 @@ Prerequisites: Git, Python 3.12 or newer, and `uv`.
 git clone --branch development https://github.com/Igrise12/Meiruzone.git
 cd Meiruzone
 uv sync
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log
 ```
 
-Run commands from the repository root. The backend creates an empty SQLite database at `data/meiruzone.sqlite3`, without contacting a mailbox. The application schema is available at `http://127.0.0.1:8000/openapi.json`; see the [API contract](docs/api-contract.md) for examples and the task 4 frontend mapping. Interactive API documentation is disabled to avoid external assets. The unused starter remains runnable with `uv run hello.py`.
+Run commands from the repository root. The backend creates an empty SQLite database at `data/meiruzone.sqlite3`, without contacting a mailbox. The application schema is available at `http://127.0.0.1:8001/openapi.json`; see the [API contract](docs/api-contract.md) for examples and frontend integration. Interactive API documentation is disabled to avoid external assets. The unused starter remains runnable with `uv run hello.py`.
 
 To exercise the API with ten synthetic messages, use a separate demo database:
 
 ```bash
-MEIRUZONE_DEMO=true MEIRUZONE_DATABASE_PATH=data/demo.sqlite3 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
+MEIRUZONE_DEMO=true MEIRUZONE_DATABASE_PATH=data/demo.sqlite3 uv run uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log
 ```
 
 Demo messages seed once in an empty database; the seeder leaves existing records alone. Corrections survive restart, and demo sync is an explicitly identified no-op. Use separate databases for demo and personal mail.
 
 ```bash
-curl 'http://127.0.0.1:8000/api/v1/emails?needsReview=true&limit=10'
-curl http://127.0.0.1:8000/api/v1/category-stats
-curl -X PATCH http://127.0.0.1:8000/api/v1/emails/demo-01/labels \
+curl 'http://127.0.0.1:8001/api/v1/emails?needsReview=true&limit=10'
+curl http://127.0.0.1:8001/api/v1/category-stats
+curl -X PATCH http://127.0.0.1:8001/api/v1/emails/demo-01/labels \
   -H 'Content-Type: application/json' -H 'X-Meiruzone-Request: 1' \
   --data '{"category":"Personal","source":"correction"}'
-curl -X POST http://127.0.0.1:8000/api/v1/sync \
+curl -X POST http://127.0.0.1:8001/api/v1/sync \
   -H 'Content-Type: application/json' -H 'X-Meiruzone-Request: 1' \
   --data '{"mode":"recent","limit":50}'
 ```
@@ -140,14 +144,15 @@ curl -X POST http://127.0.0.1:8000/api/v1/sync \
 Use process environment variables, or copy the safe `.env.example` to an ignored `.env`, keep it readable only by your user, and load it explicitly:
 
 ```bash
-uv run --env-file .env uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
+uv run --env-file .env uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log
 ```
 
 | Variable | Default |
 | --- | --- |
 | `MEIRUZONE_DATABASE_PATH` | `data/meiruzone.sqlite3` relative to the working directory |
 | `MEIRUZONE_DEMO` | `false` |
-| `MEIRUZONE_REVIEW_THRESHOLD` | `70`, in the range 0–100 |
+| `MEIRUZONE_MODEL_DIRECTORY` | Unconfigured; exact trusted, evaluated local run directory |
+| `MEIRUZONE_REVIEW_THRESHOLD` | Unset; optional numeric 0–100 override of all saved cutoffs |
 | `MEIRUZONE_FRONTEND_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` |
 | `MEIRUZONE_IMAP_HOST` | Unconfigured; hostname or IP address, without a URL |
 | `MEIRUZONE_IMAP_PORT` | `993`, in the range 1–65535; always implicit TLS |
@@ -157,7 +162,7 @@ uv run --env-file .env uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-ac
 
 Origins must be explicit loopback origins without paths or wildcards. To allow a different frontend port, add its exact origin to the comma-separated list. IMAP host, username, and a nonempty password are all required to enable real sync. Incomplete configuration keeps local inbox access available and reports sync unavailable. Control characters in IMAP configuration are rejected; passwords are masked in settings and excluded from serialization. The account scope stores a hash of host/port/username, with no password.
 
-SQLite files are created with user-only permissions. Schema version 2 uses `PRAGMA user_version`, with a transactional migration from version 1 preserving emails, predictions, labels, and demo state. Unknown versions are refused without deleting data. Ingestion updates message fields while leaving predictions and human labels intact.
+SQLite files are created with user-only permissions. Schema version 3 uses `PRAGMA user_version`; transactional migrations preserve records and add scoped IMAP state plus prediction cutoffs/errors. Existing predictions receive cutoff 70. Unknown versions are refused without deleting data. Ingestion updates message fields and fills missing predictions atomically with identity/progress, preserving completed predictions and all human labels.
 
 ### Sync real mail
 
@@ -202,36 +207,132 @@ Adjust `source` for a custom database. The exclusive create prevents overwriting
 
 For complete local deletion, stop the backend and remove the configured database plus its matching `-journal`, `-wal`, and `-shm` sidecars, and any backups you choose to delete. This removes local emails and labels, leaves the provider mailbox unchanged, and creates an empty database on next startup. Later sync can import provider messages again. File removal does not guarantee forensic erasure from the underlying storage; backup copies follow their own retention.
 
-Frontend setup commands are documented in [frontend/README.md](frontend/README.md). Its browser-stored demo labels remain separate from SQLite.
+Frontend setup commands are documented in [frontend/README.md](frontend/README.md). Offline fixture labels remain separate from SQLite; normal frontend labels are saved through the API.
 
-## Run the frontend preview
+## Run the Smart Inbox
 
 Requirements: Node.js 20.19+ or 22.12+ and npm 10+. From `frontend/`:
 
 ```bash
 npm install
-npm run dev
+npm run dev -- --host 127.0.0.1 --port 5173 --strictPort
 ```
 
-Vite prints the local preview URL. Check the frontend with `npm test`, `npm run lint`, `npm run typecheck`, and `npm run build`. The demo does not connect to a mailbox; confirmed labels stay in browser local storage.
+Start the backend first, then open `http://127.0.0.1:5173`. The UI uses the local API by default for server-side filters, 50-message pages, selected details, labels, sync outcomes, and dashboard totals. Choose Recent or Unread to sync up to 50 messages. Unavailable sync does not prevent review of stored mail.
+
+For offline synthetic development, use `VITE_DATA_SOURCE=fixtures npm run dev`. Browser fixture labels stay separate from SQLite. `VITE_API_BASE_URL` can select another loopback API ending in `/api/v1`; it never accepts remote hosts or embedded credentials. See the frontend README for production preview origin configuration.
+
+Run `npm test`, `npm run test:integration`, `npm run lint`, `npm run typecheck`, and `npm run build`. The integration command starts its own synthetic HTTP backend and temporary SQLite database, mocks IMAP, and verifies ingestion/correction/refresh/restart persistence without accessing a personal mailbox.
+
+### Build the labeled dataset
+
+Open a stored message and explicitly choose category and/or priority. Missing human fields remain Not labeled; saving priority alone does not confirm a category prediction. Saves retain original predictions and use server timestamps. Unsaved edits survive failed saves and refreshes in the current browser page; save them before reloading.
+
+Dashboard counts cover the complete database, independent of filters and pages. CSV export downloads all human labels for review, keeps predicted and confirmed columns separate, and escapes spreadsheet formulas. Its content is private local data.
+
+Training consumes human category labels directly, without exporting personal email text:
+
+```python
+from app.config import Settings
+from app.database import Repository
+
+repository = Repository(Settings.from_env().database_path)
+examples = repository.category_training_examples()
+```
+
+Each example contains id, sender, address, subject, body, confirmed category, optional priority, confirmed_at, and source. The reader excludes predictions and priority-only labels, opens SQLite read-only, and expects an initialized version 2 or 3 database. It never creates or migrates storage.
+
+### Train and evaluate the category model
+
+Run from the repository root after labeling stored messages:
+
+```bash
+uv run python -m app.train
+```
+
+The default database follows `MEIRUZONE_DATABASE_PATH`, or `data/meiruzone.sqlite3`. To load private environment configuration explicitly, use `uv run --env-file .env python -m app.train`. To select an existing database and a different private output directory:
+
+```bash
+uv run python -m app.train --database data/labeled.sqlite3 --output-dir models
+```
+
+Training never connects to IMAP, seeds demo messages, modifies labels, or activates a model. It reads a snapshot of confirmed categories and requires at least two categories with **10 distinct usable messages each**. Categories with fewer examples are excluded and listed separately from missing categories; the model can predict only its supported categories. Ten examples is a minimum readiness check, not evidence of model quality. The seeded demo database alone does not contain enough labels.
+
+Sender name/address, subject, and body share Unicode NFKC, case, and whitespace normalization in the saved pipeline. Missing fields become empty strings; invalid field types stop training with sanitized errors. Messages with no TF-IDF word tokens are excluded. Identical normalized messages collapse to one example, while conflicting labels for identical messages stop training for correction. Similar templates and threads are not grouped and can still inflate evaluation results.
+
+Distinct examples are ordered by normalized content and split with seed `42`: approximately **60% training, 20% validation, and 20% test**, stratified by category. Integer rounding can slightly change proportions. Complete normalization → default TF-IDF (no stop words) → Logistic Regression pipelines fit only the training split. Validation macro F1 selects `C` from `0.1`, `1`, and `10`, favoring smaller `C` on ties. The selected fitted pipeline is retained without refitting validation or test examples.
+
+Confidence is the maximum class probability × 100. Validation selects the lowest observed cutoff with at least five accepted examples and **90% or greater accuracy**. Confidence equal to the cutoff is accepted; lower confidence needs review. A null `review_threshold` means **review all**, including scores of 100. Validation is reused for parameter and cutoff selection, so small datasets have uncertain estimates. Probabilities are uncalibrated, and reaching the validation target does not guarantee future accuracy.
+
+The test split is evaluated once after the model and cutoff are frozen. Console output and `evaluation.json` contain aggregate class counts, unsupported categories, per-class precision/recall/F1/support, macro F1, a confusion matrix (rows are actual classes; columns are predicted classes in `supported_classes` order), and validation/test accepted accuracy and coverage. Accuracy/coverage are fractions from 0–1; confidence/cutoff use 0–100. No message text, addresses, message IDs, or credentials are included in the report.
+
+Each successful run creates `models/category-<UTC timestamp>-<unique suffix>/` with `model.joblib` and `evaluation.json`. Both files publish together after a load check, using directory permissions `0700` and file permissions `0600`. Failures preserve previous versions. Artifacts bundle the fitted pipeline, label ordering, evaluation metadata, preprocessing/artifact versions, split counts, parameters, cutoff, and Python/scikit-learn/NumPy/SciPy/Joblib versions. Repeating a run with unchanged content, labels, and environment reproduces splits and metrics; run IDs and timestamps are new.
+
+Treat both files as private. A fitted TF-IDF vocabulary can contain private email terms even though the evaluation report contains only aggregates. The default `/models/` directory and Joblib files are ignored by Git. If choosing another output directory, add it to your ignore rules before training so its JSON reports also remain private. Include model runs in protected local backups if needed; remove their version directories explicitly when deleting local data.
+
+Load a specific run only when you trust its local origin:
+
+```python
+from pathlib import Path
+from app.ml import load_model, predict_category
+
+# Replace this with the exact run directory printed by your training command.
+model = load_model(Path("models/category-<UTC timestamp>-<unique suffix>"))
+prediction = predict_category(model, {
+    "sender": "Example Hiring", "address": "hiring@example.test",
+    "subject": "Interview invitation", "body": "Please confirm your interview time.",
+})
+print(prediction.category, prediction.confidence)
+```
+
+This helper returns category, confidence, model version, and the saved review cutoff, with priority and prediction time unset. It rejects messages with no usable text. Loading checks format, preprocessing version, class ordering, fitted pipeline, and exact recorded environment versions; missing, corrupt, or incompatible runs produce sanitized errors. Retrain after an incompatible environment change. Joblib loading can execute code: metadata validation does **not** establish trust. Never load an untrusted download or uploaded model. See [scikit-learn's persistence guidance](https://scikit-learn.org/stable/model_persistence.html). The backend uses this trusted loader during startup when a model directory is configured; see the activation workflow below.
+
+### Activate and serve category predictions
+
+1. Accumulate confirmed category corrections in the Smart Inbox. Priority-only labels and predictions never become category ground truth.
+2. Run `uv run --env-file .env python -m app.train` (or omit `--env-file` when using process configuration). Training evaluates and saves a new private version without changing the active model or database.
+3. Inspect the printed aggregate evaluation and saved `evaluation.json`: supported/missing classes, per-class metrics, macro F1, confusion matrix, sample counts, review coverage/accuracy, and limitations. Deliberately approve a suitable run; activation is not automatic and no fixed score guarantees quality.
+4. Set `MEIRUZONE_MODEL_DIRECTORY` in your private `.env` to that exact locally trained run directory. Remove an existing `MEIRUZONE_REVIEW_THRESHOLD=70` assignment to use validated model cutoffs; keep a numeric override only if intentionally desired.
+5. Stop and restart the single backend process with the documented startup command, then inspect Model lab or `GET /api/v1/model`. Only trust artifacts you created locally: Joblib loading can execute code. No file watching, uploads, or automatic model selection occurs.
+6. Sync recent/unread messages. New messages and selected messages missing a category prediction use the active model; category failures are retried on a later sync. Missing priority is filled independently. Completed predictions, including their original version/cutoff/time, remain intact on repeat sync, even after selecting a replacement or updating message text. Other stored messages are untouched; there is no backfill command.
+
+Each prediction retains its model's validation cutoff. Numeric cutoffs accept equal confidence; lower confidence needs review. Null cutoffs review all unconfirmed category predictions, including confidence 100. An explicit numeric `MEIRUZONE_REVIEW_THRESHOLD` overrides every stored cutoff, including review-all, without changing saved values. Removing the override restores saved behavior. Human categories suppress Needs Review; priority-only labels do not. Missing categories/confidence remain outside Needs Review and show their own status.
+
+A missing, corrupt, or incompatible selected run reports unconfigured/invalid status without stopping inbox access or sync. New mail still receives priority, with `categoryError=model_unavailable`; failed per-message category inference records `inference_failed`. These errors do not count as IMAP skips or failed sync. Messages, identity, predictions, and progress commit together. Errors omit private exception details and content. Model lab shows only validated aggregate held-out metrics in saved class order, never paths, vocabulary, or raw training examples. Demo mode ignores model selection and keeps illustrative predictions separate from evaluated models.
+
+### Independent priority rules
+
+`priority-rules-v1` uses NFKC/case/whitespace-normalized subject and body only, matching whole words or phrases independently of category, confidence, read state, and attachment presence:
+
+| Priority | English signals | Indonesian signals |
+| --- | --- | --- |
+| High | urgent, asap, action required, reply today, due today, due tomorrow, deadline | mendesak, segera, perlu tindakan, balas hari ini, jatuh tempo hari ini, jatuh tempo besok, tenggat |
+| Low | newsletter, unsubscribe, fyi, no action required | buletin, berhenti berlangganan, sekadar informasi, tidak perlu tindakan |
+| Medium | No High/Low signal | No High/Low signal |
+
+High takes precedence over Low. The recognized negations “no action required” and “tidak perlu tindakan” are removed before matching High. Each result saves a short fixed explanation identifying the rule version; priority-only predictions use that version in `modelVersion`. These are simple text cues, not calendar/deadline parsing: quoted text and other negations can cause false positives. Confirmed human priority remains authoritative, and existing predicted priority is not recalculated during sync.
 
 ## Testing and quality
+
+See the [delivery guide](docs/delivery.md) for clean-clone setup, local Docker Compose, GitHub Actions, security checks, and versioned source releases.
 
 Run backend checks from the repository root:
 
 ```bash
 uv run python -m unittest discover -s tests
+uv run --locked ruff check .
+uv run --locked mypy
 uv lock --check
 ```
 
-Backend tests use temporary SQLite files and synthetic messages, covering API validation, access restrictions, migration rollback, MIME parsing, selective IMAP fetches, TLS/timeouts, deduplication, interrupted/concurrent sync, retained labels/predictions, and sanitized errors/debug logs. No personal mailbox or credentials are needed. Frontend checks are listed above. CI and the remaining integration/ML checks are planned:
+Backend tests use temporary SQLite files and synthetic messages, covering API validation, access restrictions, migration rollback, MIME parsing, selective IMAP fetches, TLS/timeouts, deduplication, interrupted/concurrent sync, retained labels/predictions, and sanitized errors/debug logs. ML checks cover preprocessing, insufficient labels, duplicate conflicts, stratification, held-out vocabulary isolation, thresholds, private/atomic artifacts, corrupt or incompatible models, safe CLI output, and fresh-process predictions. No personal mailbox or credentials are needed. Run ML checks alone with `uv run python -m unittest discover -s tests -p test_ml.py`. Frontend and HTTP integration checks are listed above. Remaining delivery and acceptance checks include:
 
 - Frontend filtering, labeling, correction, treemap category navigation, loading/error states, accessibility, and safe content rendering.
 - Dashboard category counts, percentages, human-label precedence, Unclassified messages, and refresh after sync or corrections.
 - Backend input validation, persistence, API integration, and local access restrictions.
 - ML preprocessing, saved-model loading, valid predictions, missing fields, and missing or corrupt models.
 - The full ingestion-to-correction workflow using isolated storage and synthetic fixtures.
-- Linting, applicable type checks, production/container builds, dependency checks, and secret scanning in CI.
+- Linting, focused Python/TypeScript checks, production/container builds, dependency audits, and redacted secret scanning are configured in CI; see the delivery guide for local commands.
 
 See [TO-DO.md](docs/TO-DO.md) for testing and security tasks attached to each milestone.
 
@@ -243,7 +344,8 @@ Future experiments may add local LLM summaries, action items, semantic search, o
 
 ## Project documentation
 
+- [User guide](docs/user-guide.md): step-by-step setup, Smart Inbox usage, model training/activation, Docker, and troubleshooting.
 - [Client brief](docs/client-brief.md): intended users, product experience, MVP scope, and success criteria.
 - [Architecture](docs/architecture.md): proposed components, data flows, local deployment, and constraints.
-- [API contract](docs/api-contract.md): implemented endpoints, examples, validation, and frontend mapping.
+- [API contract](docs/api-contract.md): implemented endpoints, validation, and frontend integration.
 - [Task list](docs/TO-DO.md): current frontend-first delivery order, testing, security, and milestone acceptance.
