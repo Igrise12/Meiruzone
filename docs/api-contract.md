@@ -1,6 +1,6 @@
 # Local API contract, version 1
 
-The backend runs at `http://127.0.0.1:8000`. `GET /openapi.json` exposes the
+The backend runs at `http://127.0.0.1:8001`. `GET /openapi.json` exposes the
 executable schemas. Interactive documentation is disabled to avoid loading
 external assets. Application endpoints use `/api/v1` and return JSON.
 SQLite persistence, safe IMAP retrieval, local inference/priority, and frontend integration are implemented.

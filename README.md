@@ -2,6 +2,8 @@
 
 A local-first Smart Inbox that will classify email, estimate its priority, and learn from user corrections. Meiruzone aims to make email easier to review while keeping message processing, storage, and machine-learning inference on the user's computer.
 
+Start with the [user guide](docs/user-guide.md) for a demo walkthrough, email-account setup, syncing, labeling, training, model activation, Docker usage, and troubleshooting.
+
 ## Project status
 
 The React Smart Inbox reviews locally stored email and retains an explicit synthetic development mode. The FastAPI backend provides validated inbox, labeling, category statistics, and explicit read-only IMAP sync backed by SQLite. Tasks 1–7 are implemented, including local category training/evaluation, approved model activation, sync-time inference, independent priority rules, GitHub Actions, and local Docker Compose packaging. The frontend uses the local API by default, with an explicit offline fixture mode. Model lab displays active status and saved held-out metrics; missing or failed category predictions leave messages and manual labeling available. Follow the [delivery guide](docs/delivery.md) for repeatable setup and packaging; full MVP acceptance remains task 8.
@@ -54,7 +56,7 @@ Model evaluation includes per-class precision, recall, F1, macro F1, and a confu
 | Packaging | Docker and optional Docker Compose |
 | Continuous integration | GitHub Actions |
 
-React/API integration, persistent human labeling, FastAPI, SQLite, safe IMAP ingestion, and category training/evaluation are implemented. Approved model activation, sync-time inference, and priority rules are implemented. Packaging and CI remain later milestones.
+React/API integration, persistent human labeling, FastAPI, SQLite, safe IMAP ingestion, category training/evaluation, approved model activation, sync-time inference, priority rules, local packaging, and CI are implemented. Final live-account and original-design acceptance remain open; see the [acceptance report](docs/acceptance.md).
 
 ## Privacy and security
 
@@ -82,11 +84,12 @@ Frontend CI should start in the first phase and expand as backend and ML compone
 ```text
 Meiruzone/
 ├── app/                  # FastAPI, SQLite, ingestion, shared ML helpers, training CLI
-├── docker/               # Placeholder for container configuration
+├── docker/               # Backend/frontend images and local web-server configuration
 ├── docs/
 │   ├── architecture.md   # Proposed system design and data flows
 │   ├── api-contract.md   # Implemented HTTP shapes and frontend adapter mapping
 │   ├── client-brief.md   # Product goals, scope, and success criteria
+│   ├── user-guide.md     # Setup, daily use, training, and troubleshooting
 │   └── TO-DO.md          # Frontend-first implementation checklist
 ├── frontend/             # Vite + React + TypeScript Smart Inbox preview
 │   ├── src/              # Inbox UI, synthetic fixtures, adapter, and treemap
@@ -112,26 +115,26 @@ Prerequisites: Git, Python 3.12 or newer, and `uv`.
 git clone --branch development https://github.com/Igrise12/Meiruzone.git
 cd Meiruzone
 uv sync
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log
 ```
 
-Run commands from the repository root. The backend creates an empty SQLite database at `data/meiruzone.sqlite3`, without contacting a mailbox. The application schema is available at `http://127.0.0.1:8000/openapi.json`; see the [API contract](docs/api-contract.md) for examples and frontend integration. Interactive API documentation is disabled to avoid external assets. The unused starter remains runnable with `uv run hello.py`.
+Run commands from the repository root. The backend creates an empty SQLite database at `data/meiruzone.sqlite3`, without contacting a mailbox. The application schema is available at `http://127.0.0.1:8001/openapi.json`; see the [API contract](docs/api-contract.md) for examples and frontend integration. Interactive API documentation is disabled to avoid external assets. The unused starter remains runnable with `uv run hello.py`.
 
 To exercise the API with ten synthetic messages, use a separate demo database:
 
 ```bash
-MEIRUZONE_DEMO=true MEIRUZONE_DATABASE_PATH=data/demo.sqlite3 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
+MEIRUZONE_DEMO=true MEIRUZONE_DATABASE_PATH=data/demo.sqlite3 uv run uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log
 ```
 
 Demo messages seed once in an empty database; the seeder leaves existing records alone. Corrections survive restart, and demo sync is an explicitly identified no-op. Use separate databases for demo and personal mail.
 
 ```bash
-curl 'http://127.0.0.1:8000/api/v1/emails?needsReview=true&limit=10'
-curl http://127.0.0.1:8000/api/v1/category-stats
-curl -X PATCH http://127.0.0.1:8000/api/v1/emails/demo-01/labels \
+curl 'http://127.0.0.1:8001/api/v1/emails?needsReview=true&limit=10'
+curl http://127.0.0.1:8001/api/v1/category-stats
+curl -X PATCH http://127.0.0.1:8001/api/v1/emails/demo-01/labels \
   -H 'Content-Type: application/json' -H 'X-Meiruzone-Request: 1' \
   --data '{"category":"Personal","source":"correction"}'
-curl -X POST http://127.0.0.1:8000/api/v1/sync \
+curl -X POST http://127.0.0.1:8001/api/v1/sync \
   -H 'Content-Type: application/json' -H 'X-Meiruzone-Request: 1' \
   --data '{"mode":"recent","limit":50}'
 ```
@@ -141,7 +144,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/sync \
 Use process environment variables, or copy the safe `.env.example` to an ignored `.env`, keep it readable only by your user, and load it explicitly:
 
 ```bash
-uv run --env-file .env uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
+uv run --env-file .env uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log
 ```
 
 | Variable | Default |
@@ -341,6 +344,7 @@ Future experiments may add local LLM summaries, action items, semantic search, o
 
 ## Project documentation
 
+- [User guide](docs/user-guide.md): step-by-step setup, Smart Inbox usage, model training/activation, Docker, and troubleshooting.
 - [Client brief](docs/client-brief.md): intended users, product experience, MVP scope, and success criteria.
 - [Architecture](docs/architecture.md): proposed components, data flows, local deployment, and constraints.
 - [API contract](docs/api-contract.md): implemented endpoints, validation, and frontend integration.

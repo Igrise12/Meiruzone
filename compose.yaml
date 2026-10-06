@@ -8,7 +8,7 @@ services:
       - path: ${MEIRUZONE_ENV_FILE:-.env}
         required: false
     ports:
-      - "127.0.0.1:${MEIRUZONE_API_PORT:-8000}:8000"
+      - "127.0.0.1:${MEIRUZONE_API_PORT:-8001}:8000"
     volumes:
       - type: bind
         source: ${MEIRUZONE_DATA_DIRECTORY:-./data}
@@ -36,7 +36,7 @@ services:
       context: .
       dockerfile: docker/frontend.Dockerfile
       args:
-        VITE_API_BASE_URL: "http://127.0.0.1:${MEIRUZONE_API_PORT:-8000}/api/v1"
+        VITE_API_BASE_URL: "http://127.0.0.1:${MEIRUZONE_API_PORT:-8001}/api/v1"
     ports:
       - "127.0.0.1:${MEIRUZONE_FRONTEND_PORT:-5173}:8080"
     depends_on:

@@ -195,8 +195,11 @@ class MLTests(unittest.TestCase):
             self.assertEqual(set(first.parent.iterdir()), {first, second})
             self.assertEqual((first / "model.joblib").read_bytes(), before)
         self.assertEqual(load_model(first)["metadata"]["model_version"], first.name)
+        # Source archives have no .git directory; check the shipped rules in an isolated repo.
+        subprocess.run(["git", "init", "--quiet", str(self.root)], check=True, capture_output=True)
+        (self.root / ".gitignore").write_text((Path(__file__).resolve().parents[1] / ".gitignore").read_text())
         ignored = subprocess.run(["git", "check-ignore", "models/example/model.joblib", "models/example/evaluation.json"],
-                                 capture_output=True, text=True)
+                                 cwd=self.root, capture_output=True, text=True)
         self.assertEqual(ignored.returncode, 0)
         self.assertEqual(len(ignored.stdout.splitlines()), 2)
 

@@ -161,7 +161,7 @@ The MVP should run from a clean local setup with the fewest necessary processes.
 
 Secrets come from backend process environment variables and are never committed. An ignored private `.env` may be explicitly loaded by `uv run --env-file`; `.env.example` contains safe placeholders. Password/app-password login is supported through backend-only IMAP settings; passwords are masked, excluded from settings serialization, and never stored in SQLite or returned by the API. OAuth and simultaneous account/folder configuration remain future work.
 
-The documented Uvicorn startup binds to `127.0.0.1:8000` with access logging disabled. Host names are limited to loopback, and browser origins to an explicit local allowlist. All writes require JSON and `X-Meiruzone-Request: 1`, with an actual 4096-byte body limit; foreign/null origins are rejected. This protects against unsolicited browser writes, not programs already running as the local user. Errors and application logs omit input values, bodies, and private exception details. See the [implemented API contract](api-contract.md) and root README for startup, configuration, and verification.
+The documented Uvicorn startup binds to `127.0.0.1:8001` with access logging disabled. Host names are limited to loopback, and browser origins to an explicit local allowlist. All writes require JSON and `X-Meiruzone-Request: 1`, with an actual 4096-byte body limit; foreign/null origins are rejected. This protects against unsolicited browser writes, not programs already running as the local user. Errors and application logs omit input values, bodies, and private exception details. See the [implemented API contract](api-contract.md) and root README for startup, configuration, and verification.
 
 SMTP, cloud hosting, external LLM APIs, Redis, Celery, Kubernetes, and MLflow are outside the MVP runtime.
 
@@ -178,3 +178,7 @@ The architecture intentionally leaves extension points for PostgreSQL, richer sc
 ## MVP acceptance path
 
 The end-to-end path is complete when a user can sync real mail over IMAP, review locally stored messages, label examples, train and evaluate a model, receive category/confidence and priority predictions, correct them, and use the Smart Inbox and an accurate category treemap locally with reproducible setup and CI checks.
+
+The [task 8 acceptance report](acceptance.md) separates local synthetic evidence from final acceptance. Real HTTP checks now derive training data entirely from API-confirmed human labels, verify read-only training, require explicit model selection/restart for each version, and preserve completed predictions and corrections through replacement. Chromium checks built containers, keyboard controls, mobile overflow, loading/error recovery and browser network destinations; screenshots use synthetic data only. Clean extracted source is also verified without checkout Git metadata.
+
+As of 5 October 2026, automated acceptance passes but the MVP is not yet accepted. The dedicated live IMAP walkthrough, including provider-side flag comparison, and final fidelity comparison with the original Open Design handover remain required. Hosted CI evidence is distinct from local command results. No public API or runtime architecture changes were needed for this review.

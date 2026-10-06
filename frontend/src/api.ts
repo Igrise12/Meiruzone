@@ -38,7 +38,7 @@ export function receivedText(value: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
-export function createHttpAdapter(baseUrl = "http://127.0.0.1:8000/api/v1", transport: typeof fetch = (...args) => fetch(...args)): InboxAdapter {
+export function createHttpAdapter(baseUrl = "http://127.0.0.1:8001/api/v1", transport: typeof fetch = (...args) => fetch(...args)): InboxAdapter {
   baseUrl = baseUrl.replace(/\/$/, "");
   let address: URL;
   try { address = new URL(baseUrl); }

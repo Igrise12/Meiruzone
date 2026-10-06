@@ -13,7 +13,7 @@ From the repository root, start the backend:
 
 ```bash
 uv sync
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log
 ```
 
 In another terminal, from `frontend/`:
@@ -28,12 +28,12 @@ Open `http://127.0.0.1:5173`. The default backend starts with an empty database 
 To test API persistence with synthetic mail, replace the backend command with:
 
 ```bash
-MEIRUZONE_DEMO=true MEIRUZONE_DATABASE_PATH=data/demo.sqlite3 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
+MEIRUZONE_DEMO=true MEIRUZONE_DATABASE_PATH=data/demo.sqlite3 uv run uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log
 ```
 
 The UI identifies backend demo mode; its sync is a no-op. Human corrections persist in that separate SQLite database.
 
-`VITE_API_BASE_URL` can select another loopback API, for example `http://127.0.0.1:8765/api/v1`. Remote hosts, embedded credentials, query strings, and URL fragments are rejected. The default is `http://127.0.0.1:8000/api/v1`. These Vite settings are public build configuration; never put credentials in them. Restart Vite or rebuild after changing them.
+`VITE_API_BASE_URL` can select another loopback API, for example `http://127.0.0.1:8765/api/v1`. Remote hosts, embedded credentials, query strings, and URL fragments are rejected. The default is `http://127.0.0.1:8001/api/v1`. These Vite settings are public build configuration; never put credentials in them. Restart Vite or rebuild after changing them.
 
 The backend allowlist must include the browser's exact origin. The default allows localhost/127.0.0.1 on port 5173. For `npm run preview`, explicitly add its loopback origin on port 4173 to `MEIRUZONE_FRONTEND_ORIGINS` and restart the backend.
 
@@ -73,3 +73,5 @@ Use `npm ci` for clean checkouts and CI. The [delivery guide](../docs/delivery.m
 `npm test` runs synthetic adapter/component/treemap tests. The separate integration command requires the repository's `.venv` and permission to bind a loopback port. It starts and cleans up its own HTTP backend and temporary database, mocks IMAP, and trains a small synthetic model and verifies ingestion-to-inference, safe rendering, correction, aggregate refresh, active-model and label persistence across frontend reload/backend restart, CSV export, and origin restrictions. It never contacts a personal mailbox. These commands use the project's Bash/local Linux workflow.
 
 `npm run build` checks TypeScript and creates `dist/`. Production data-source/API URL settings are selected at build time.
+
+Task 8 adds a second HTTP acceptance case that labels synced synthetic messages through the API, trains from SQLite, explicitly selects/restarts model versions, and verifies UI category/priority correction and later retraining. The container browser check also covers keyboard controls, visible focus, 390 px list/detail layouts, safe plain-text content, loading/error recovery, and requests limited to its loopback frontend/API origins. It writes synthetic screenshots under ignored `test-results/`; reviewed captures and remaining live-account/Open Design gates are recorded in the [acceptance report](../docs/acceptance.md). Passing these automated checks alone does not complete live MVP acceptance.

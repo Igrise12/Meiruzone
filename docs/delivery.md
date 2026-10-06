@@ -26,7 +26,7 @@ Set backend IMAP settings in this ignored file when ready to retrieve real mail.
 Start the backend and frontend in separate terminals:
 
 ```bash
-uv run --locked --env-file .env uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
+uv run --locked --env-file .env uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log
 ```
 
 ```bash
@@ -53,7 +53,7 @@ docker compose up --build --detach --wait
 
 Save those numeric UID/GID values in `.env` for later shells, especially if they differ from the template's 1000. The optional `.env` is supplied only to the backend at runtime. It is excluded from both image build contexts. Default relative database/model paths work from `/app` inside the backend. Use `data/<filename>.sqlite3` and `models/<run>` for mounted files; host absolute paths must be translated to these container paths.
 
-Open <http://127.0.0.1:5173>; the API is <http://127.0.0.1:8000/api/v1>. Both published ports bind to loopback. Uvicorn listens on all interfaces *inside* its container so Docker can forward traffic, with one worker per SQLite database. The frontend serves built assets through unprivileged Nginx and uses the existing loopback API adapter. Access logging is disabled.
+Open <http://127.0.0.1:5173>; the API is <http://127.0.0.1:8001/api/v1>. Both published ports bind to loopback. Uvicorn listens on all interfaces *inside* its container so Docker can forward traffic, with one worker per SQLite database. The frontend serves built assets through unprivileged Nginx and uses the existing loopback API adapter. Access logging is disabled.
 
 `MEIRUZONE_DATA_DIRECTORY` and `MEIRUZONE_MODELS_DIRECTORY` select existing host directories; defaults are `./data` and `./models`. They must be owned by the selected UID/GID. Compose refuses to create missing directories, preventing accidental root-owned storage. The backend can write SQLite, while the normal model mount is read-only. Both services run without root privileges, drop Linux capabilities, and prevent privilege escalation. Runtime files retain the existing 0700 directory / 0600 file policy.
 

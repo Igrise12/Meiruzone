@@ -155,15 +155,17 @@ CI covers frontend, backend, ML, real HTTP integration, built-container browser 
 ## 8. Complete MVP acceptance and security review
 
 - [ ] Walk through the [client brief's definition of success](client-brief.md#definition-of-success) using an explicitly configured test account or approved local mailbox.
-- [ ] Verify the full path: sync → local storage → labeling → training/evaluation → prediction → Smart Inbox → correction → later retraining.
-- [ ] Verify the dashboard treemap matches local category totals, refreshes when categories change, and opens the expected messages from a selected category.
-- [ ] Confirm operation without cloud infrastructure and without external AI calls; allow only expected network access such as IMAP and the local API during normal use.
-- [ ] Confirm read-only mailbox behavior, protected secrets, sanitized logs, safe message rendering, and restricted local API access.
-- [ ] Confirm automated fixtures, screenshots, CI outputs, container images, and release files contain no private emails or credentials.
-- [ ] Verify database/model persistence across restart and understandable recovery from connection failures, missing models, and invalid inputs.
+- [x] Verify the full path: sync → local storage → labeling → training/evaluation → prediction → Smart Inbox → correction → later retraining.
+- [x] Verify the dashboard treemap matches local category totals, refreshes when categories change, and opens the expected messages from a selected category.
+- [x] Confirm operation without cloud infrastructure and without external AI calls; allow only expected network access such as IMAP and the local API during normal use.
+- [x] Confirm read-only mailbox behavior, protected secrets, sanitized logs, safe message rendering, and restricted local API access.
+- [x] Confirm automated fixtures, screenshots, CI outputs, container images, and release files contain no private emails or credentials.
+- [x] Verify database/model persistence across restart and understandable recovery from connection failures, missing models, and invalid inputs.
 - [ ] Review accessibility and frontend fidelity against the Open Design handover with the final integrated states.
 - [ ] Resolve failing checks and document remaining model limitations before declaring the MVP complete.
-- [ ] Update the [architecture](architecture.md) and [client brief](client-brief.md) to reflect agreed implementation decisions and the frontend-first delivery order.
+- [x] Update the [architecture](architecture.md) and [client brief](client-brief.md) to reflect agreed implementation decisions and the frontend-first delivery order.
+
+**Acceptance status (5 October 2026):** automated synthetic acceptance and security checks pass; the MVP remains **not accepted**. The [acceptance report](acceptance.md) maps evidence and limits to every checkbox, records clean-source verification and reviewed synthetic screenshots, and documents the remaining procedure. Two real HTTP cases cover API-confirmed labels → SQLite training/evaluation → explicit model activation/restart → inference → UI category/priority correction → later retraining, retaining older artifacts and predictions. All 70 backend tests, 33 frontend tests, frontend lint/type/build, Ruff/mypy/lockfile checks, dependency audits, redacted secret scans, and the built-container Chromium workflow pass. The source-archive privacy test was fixed to run without checkout Git metadata. Dedicated live-account acceptance and fidelity against the original Open Design references remain open because neither prerequisite was available. Hosted Actions were not run for these changes; no real mailbox, private model, release tag, publication or deployment was used.
 
 ## Deferred work
 

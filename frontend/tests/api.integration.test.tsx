@@ -1,17 +1,19 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import App from "../src/App";
 import { confirmedLabelsCsv, createHttpAdapter } from "../src/api";
 
 const suite = process.env.MEIRUZONE_INTEGRATION === "1" ? describe : describe.skip;
+const execute = promisify(execFile);
 suite("Smart Inbox against a real loopback API", () => {
   let directory: string;
   let child: ChildProcess | undefined;
@@ -23,9 +25,12 @@ suite("Smart Inbox against a real loopback API", () => {
     return fetch(String(url).replace(":0/", `:${port}/`), { ...options, headers });
   });
 
-  async function start() {
+  async function start(database = "inbox.sqlite3", phase?: string, modelDirectory?: string) {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("MEIRUZONE_")));
-    child = spawn(resolve("../.venv/bin/python"), ["tests/http_fixture.py", resolve(directory, "inbox.sqlite3"), String(port)], {
+    const args = ["tests/http_fixture.py", resolve(directory, database), String(port)];
+    if (phase) args.push("--phase", phase);
+    if (modelDirectory) args.push("--model-directory", modelDirectory);
+    child = spawn(resolve("../.venv/bin/python"), args, {
       cwd: resolve(".."), env: { ...env, PYTHONPATH: `${resolve("..")}:${resolve("../tests")}` }, stdio: "ignore",
     });
     for (let attempt = 0; attempt < 100; attempt++) {
@@ -104,4 +109,96 @@ suite("Smart Inbox against a real loopback API", () => {
     expect(forbidden.status).toBe(403);
     expect((await api.getEmail("demo-01")).humanLabel).toEqual(corrected.humanLabel);
   }, 20000);
+
+  it("trains only HTTP-confirmed labels, explicitly activates replacements, and retains original predictions", async () => {
+    cleanup(); await stop();
+    await start("workflow.sqlite3", "training");
+    const database = resolve(directory, "workflow.sqlite3");
+    const models = resolve(directory, "workflow-models");
+    await mkdir(models, { mode: 0o700 });
+    expect((await api.getModelStatus()).state).toBe("unconfigured");
+    expect((await api.sync("recent")).imported).toBe(40);
+    const rows = (await api.listEmails()).items;
+    expect(rows).toHaveLength(40);
+    expect(rows.every((row) => row.prediction?.category === null && row.prediction?.categoryError === "model_unavailable")).toBe(true);
+    expect((await api.getCategoryStats()).categories.find((row) => row.category === "Unclassified")?.count).toBe(40);
+    expect((await api.sync("unread"))).toMatchObject({ imported: 0, processed: 20 });
+    expect((await api.listEmails()).items.map((row) => [row.id, row.read])).toEqual(rows.map((row) => [row.id, row.read]));
+    for (const row of rows) {
+      await api.saveLabel(row.id, { category: row.subject.startsWith("Recruitment") ? "Recruitment" : "Spam", source: "manual" });
+    }
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("MEIRUZONE_")));
+    async function train() {
+      const before = await readFile(database);
+      const previous = await readdir(models);
+      await execute(resolve("../.venv/bin/python"), ["-m", "app.train", "--database", database, "--output-dir", models], { cwd: resolve(".."), env });
+      expect(await readFile(database)).toEqual(before);
+      const runs = (await readdir(models)).filter((run) => !previous.includes(run));
+      expect(runs).toHaveLength(1);
+      const [run] = runs;
+      return { path: resolve(models, run), report: JSON.parse(await readFile(resolve(models, run, "evaluation.json"), "utf8")) };
+    }
+    async function checkTotals() {
+      const { stdout } = await execute(resolve("../.venv/bin/python"), ["-c", [
+        "import json, sqlite3, sys",
+        "connection = sqlite3.connect('file:' + sys.argv[1] + '?mode=ro', uri=True)",
+        "print(json.dumps(dict(connection.execute(\"SELECT COALESCE(h.category, p.category, 'Unclassified'), COUNT(*) FROM emails e LEFT JOIN human_labels h ON h.email_id = e.id LEFT JOIN predictions p ON p.email_id = e.id GROUP BY 1\"))))",
+      ].join("\n"), database], { env });
+      const stats = await api.getCategoryStats();
+      expect(Object.fromEntries(stats.categories.filter((row) => row.count).map((row) => [row.category, row.count]))).toEqual(JSON.parse(stdout));
+      expect(stats.categories.reduce((total, row) => total + row.count, 0)).toBe(stats.total);
+      const filtered = await api.listEmails({ category: "Spam", limit: 1, offset: 1 });
+      expect(filtered.items).toHaveLength(1);
+      expect(await api.getCategoryStats()).toEqual(stats);
+    }
+    await checkTotals();
+    const first = await train();
+    expect(first.report.supported_classes).toEqual(["Recruitment", "Spam"]);
+    expect(first.report.data.raw_examples).toBe(40);
+    expect(first.report.test.confusion_matrix).toHaveLength(2);
+    expect(first.report.test.macro_f1).toBeGreaterThanOrEqual(0);
+    expect(first.report.test.macro_f1).toBeLessThanOrEqual(1);
+    expect((await api.getModelStatus()).state).toBe("unconfigured");
+    const artifact = await readFile(resolve(first.path, "model.joblib"));
+    await stop(); await start("workflow.sqlite3", "prediction", first.path);
+    const active = await api.getModelStatus();
+    expect(active.modelVersion).toBe(first.report.model_version);
+    expect(active.evaluation?.macroF1).toBe(first.report.test.macro_f1);
+    expect(active.evaluation?.confusionMatrix).toEqual(first.report.test.confusion_matrix);
+    expect(active.evaluation?.perClass.map((row) => row.category)).toEqual(first.report.supported_classes);
+    expect((await api.sync("recent")).imported).toBe(2);
+    const predicted = (await api.listEmails({ q: "Synthetic message" })).items;
+    const recruitment = predicted.find((row) => row.prediction?.category === "Recruitment")!;
+    expect(recruitment.prediction).toMatchObject({ modelVersion: first.report.model_version, priority: "Medium", categoryError: null });
+    const view = render(<App adapter={api} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Recruitment 21 50%/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Example.*Synthetic message/ }));
+    const detail = within(screen.getByRole("article", { name: "Selected email" }));
+    expect(await detail.findByText(/Recruitment Recruitment <img/)).toBeInTheDocument();
+    expect(document.querySelector(".detail-body img")).toBeNull();
+    fireEvent.change(detail.getByLabelText("Category"), { target: { value: "Spam" } });
+    fireEvent.change(detail.getByLabelText("Priority"), { target: { value: "Low" } });
+    fireEvent.click(detail.getByRole("button", { name: "Confirm labels" }));
+    await waitFor(() => expect(within(screen.getByLabelText("Category counts")).getByRole("button", { name: /Spam 22 52%/ })).toBeInTheDocument());
+    const corrected = await api.getEmail(recruitment.id);
+    expect(corrected.humanLabel).toMatchObject({ category: "Spam", priority: "Low", source: "correction" });
+    expect(corrected.prediction).toEqual(recruitment.prediction);
+    expect(corrected.needsReview).toBe(false);
+    await checkTotals();
+    view.unmount();
+    const replacement = await train();
+    expect(replacement.report.data.raw_examples).toBe(41);
+    expect(replacement.path).not.toBe(first.path);
+    expect(await readFile(resolve(first.path, "model.joblib"))).toEqual(artifact);
+    expect((await api.getModelStatus()).modelVersion).toBe(first.report.model_version);
+    await stop(); await start("workflow.sqlite3", "replacement", replacement.path);
+    expect((await api.getModelStatus()).modelVersion).toBe(replacement.report.model_version);
+    expect((await api.sync("recent")).imported).toBe(1);
+    expect((await api.getEmail(recruitment.id)).humanLabel).toEqual(corrected.humanLabel);
+    expect((await api.getEmail(recruitment.id)).prediction).toEqual(recruitment.prediction);
+    expect((await api.listEmails()).items.filter((row) => row.prediction?.modelVersion === replacement.report.model_version)).toHaveLength(1);
+    expect((await api.listEmails({ hasHumanLabel: true })).total).toBe(41);
+    console.info(`Synthetic acceptance: ${first.report.data.raw_examples} labels → ${replacement.report.data.raw_examples} labels; Recruitment/Spam macro F1 ${first.report.test.macro_f1} → ${replacement.report.test.macro_f1}.`);
+    await checkTotals();
+  }, 30000);
 });

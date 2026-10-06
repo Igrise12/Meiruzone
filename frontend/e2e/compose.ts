@@ -60,13 +60,22 @@ test.afterAll(async () => {
   finally { if (directory) await rm(directory, { recursive: true, force: true }); }
 });
 
-test("built app retains corrections and predictions after container recreation", async ({ page, request }) => {
+test("built app retains corrections and predictions after container recreation", async ({ page, request }, testInfo) => {
   const api = `http://127.0.0.1:${apiPort}/api/v1`;
+  const unexpectedRequests = new Set<string>();
+  const browserErrors: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (![new URL(api).origin, `http://127.0.0.1:${frontendPort}`].includes(url.origin)) unexpectedRequests.add(url.origin);
+  });
+  page.on("pageerror", (error) => browserErrors.push(error.name));
+  await page.setViewportSize({ width: 1440, height: 900 });
   expect((await request.get(`${api}/emails`)).ok()).toBe(true);
   expect((await (await request.get(`${api}/emails`)).json()).total).toBe(0);
   expect((await (await request.get(`${api}/sync`)).json()).available).toBe(false);
   await page.goto(`http://127.0.0.1:${frontendPort}`);
   await expect(page.getByText("Your inbox is empty")).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("empty-inbox.png"), fullPage: true });
 
   for (const [service, port] of [["backend", "8000/tcp"], ["frontend", "8080/tcp"]]) {
     const id = await compose("ps", "--quiet", service);
@@ -90,11 +99,51 @@ test("built app retains corrections and predictions after container recreation",
 
   await writeFile(configuration, `MEIRUZONE_DEMO=true\nMEIRUZONE_FRONTEND_ORIGINS=http://localhost:${frontendPort},http://127.0.0.1:${frontendPort}\n`, { mode: 0o600 });
   await compose("up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "90");
+  await compose("exec", "-T", "backend", "python", "-c", [
+    "from pathlib import Path; from app.database import Repository",
+    "with Repository(Path('data/meiruzone.sqlite3')).connect() as connection:",
+    " connection.execute(\"UPDATE emails SET body = ? WHERE id = 'demo-01'\", (\"Synthetic acceptance <img src='https://tracker.invalid/pixel' onerror='alert(1)'>\",))",
+  ].join("\n"));
   await page.reload();
   await page.getByRole("button", { name: /Example Recruitment.*Synthetic Recruitment/ }).click();
   const detail = page.getByRole("article", { name: "Selected email" });
   await expect(detail.getByRole("region", { name: "Original prediction" })).toContainText("Recruitment");
   await expect(detail.getByRole("region", { name: "Original prediction" })).toContainText("Category confidence 61%");
+  await expect(detail.getByText(/Synthetic acceptance <img/)).toBeVisible();
+  await expect(detail.locator(".detail-body img")).toHaveCount(0);
+  await page.getByRole("link", { name: "Meiruzo home" }).focus();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "Smart inbox", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  const review = page.getByRole("button", { name: "Needs review", exact: true });
+  await expect(review).toBeFocused();
+  expect(await page.evaluate("(() => { const style = getComputedStyle(document.activeElement); return style.outlineStyle !== 'none' || style.boxShadow !== 'none'; })()")).toBe(true);
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("heading", { name: "Needs review", exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("needs-review.png"), fullPage: true });
+  await page.getByRole("button", { name: "Smart inbox", exact: true }).click();
+  const totals = await (await request.get(`${api}/category-stats`)).json();
+  await page.getByLabel("Category counts").getByRole("button", { name: /Recruitment/ }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByLabel("Filter by category")).toHaveValue("Recruitment");
+  expect(await (await request.get(`${api}/category-stats`)).json()).toEqual(totals);
+  await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+  await page.getByRole("button", { name: "Mailbox setup", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Connect your inbox" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("desktop-inbox.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: /Example Recruitment.*Synthetic Recruitment/ }).click();
+  await expect(detail.getByLabel("Category", { exact: true })).toBeVisible();
+  expect(await page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("mobile-detail.png"), fullPage: true });
+  await detail.getByRole("button", { name: /Back to messages/ }).click();
+  await expect(page.getByLabel("Email message list")).toBeVisible();
+  expect(await page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("mobile-inbox.png"), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
   const original = (await (await request.get(`${api}/emails/demo-01`)).json()).prediction;
   await detail.getByLabel("Category", { exact: true }).selectOption("Personal");
   await detail.getByRole("button", { name: "Confirm labels" }).click();
@@ -126,4 +175,23 @@ test("built app retains corrections and predictions after container recreation",
     "assert prediction.category in ('Recruitment', 'Spam') and 0 <= prediction.confidence <= 100",
   ].join("\n"));
   expect((await request.get(`${api}/emails`, { headers: { Origin: "https://untrusted.invalid" } })).status()).toBe(403);
+  await page.route(`${api}/emails?*`, (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "storage_unavailable", message: "Synthetic failure." } }) }));
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Retry inbox" })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("inbox-error.png"), fullPage: true });
+  await page.unroute(`${api}/emails?*`);
+  await page.getByRole("button", { name: "Retry inbox" }).click();
+  await expect(page.getByRole("button", { name: /Example Recruitment.*Synthetic Recruitment/ })).toBeVisible();
+  let releaseCounts!: () => void;
+  const countsReady = new Promise<void>((resolve) => { releaseCounts = resolve; });
+  await page.route(`${api}/category-stats`, async (route) => { await countsReady; await route.continue(); });
+  try {
+    await page.reload();
+    await expect(page.getByText("Loading category counts…")).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath("loading-inbox.png"), fullPage: true });
+  } finally { releaseCounts(); }
+  await expect(page.getByText("Loading category counts…")).not.toBeVisible();
+  await page.unroute(`${api}/category-stats`);
+  expect([...unexpectedRequests]).toEqual([]);
+  expect(browserErrors).toEqual([]);
 });

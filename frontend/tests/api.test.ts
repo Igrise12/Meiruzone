@@ -45,7 +45,7 @@ describe("HTTP inbox adapter", () => {
     const transport = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(status)));
     const api = createHttpAdapter(undefined, transport);
     expect(await api.getModelStatus()).toEqual(status);
-    expect(transport.mock.calls[0][0]).toBe("http://127.0.0.1:8000/api/v1/model");
+    expect(transport.mock.calls[0][0]).toBe("http://127.0.0.1:8001/api/v1/model");
     const email = { ...await fixtureAdapter.getEmail("m01"), prediction: { priority: "High", categoryError: "inference_failed", reviewThreshold: null } };
     transport.mockImplementation(async () => new Response(JSON.stringify(email)));
     expect((await api.getEmail("m01")).prediction).toEqual(email.prediction);
